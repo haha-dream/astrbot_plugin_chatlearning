@@ -91,6 +91,9 @@ class WordStock:
             vec_col = records.column("vec")
             if vec_col[0].as_py():
                 self._vec_dim = len(vec_col[0].as_py())
+                logger.info(
+                    f"[WordStock] 检测到已有数据，向量维度: {self._vec_dim}"
+                )
 
     async def close(self):
         """关闭 LanceDB 连接，释放后台线程。"""
