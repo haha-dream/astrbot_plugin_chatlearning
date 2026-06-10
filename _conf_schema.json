@@ -20,13 +20,13 @@
   "learning_groups": {
     "description": "学习群列表",
     "type": "list",
-    "hint": "开启学习的群 ID，留空表示所有群",
+    "hint": "开启学习的群 ID，留空表示所有群。QQ 填群号，TG 填 chat ID（带负号）",
     "default": []
   },
   "reply_groups": {
     "description": "回复群列表",
     "type": "list",
-    "hint": "开启回复的群 ID，留空表示所有群",
+    "hint": "开启回复的群 ID，留空表示所有群。QQ 填群号，TG 填 chat ID（带负号）",
     "default": []
   },
   "reply_chance": {
