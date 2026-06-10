@@ -1,0 +1,173 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: "Microsoft YaHei", sans-serif;
+        background: #1a1a2e;
+        color: #eee;
+        padding: 32px;
+        width: 680px;
+      }
+      h1 {
+        font-size: 28px;
+        margin-bottom: 4px;
+        color: #e94560;
+      }
+      .sub {
+        color: #888;
+        font-size: 13px;
+        margin-bottom: 24px;
+      }
+      .card {
+        background: #16213e;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 16px;
+      }
+      .row {
+        display: flex;
+        gap: 16px;
+      }
+      .stat {
+        flex: 1;
+        text-align: center;
+        padding: 12px;
+        background: #0f3460;
+        border-radius: 8px;
+      }
+      .stat .num {
+        font-size: 32px;
+        font-weight: bold;
+        color: #e94560;
+      }
+      .stat .label {
+        font-size: 12px;
+        color: #aaa;
+        margin-top: 4px;
+      }
+      h2 {
+        font-size: 18px;
+        margin-bottom: 12px;
+        color: #e94560;
+        border-bottom: 1px solid #333;
+        padding-bottom: 6px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 6px 0;
+        font-size: 13px;
+        border-bottom: 1px solid #222;
+      }
+      th {
+        color: #aaa;
+        font-weight: normal;
+      }
+      .bar-wrap {
+        background: #333;
+        border-radius: 4px;
+        height: 16px;
+        overflow: hidden;
+      }
+      .bar {
+        background: linear-gradient(90deg, #e94560, #ff6b6b);
+        height: 100%;
+        border-radius: 4px;
+      }
+      .freq {
+        color: #ff6b6b;
+        font-size: 12px;
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>📊 ChatLearning 词库统计</h1>
+    <div class="sub">{{ group_label }} · {{ now }}</div>
+    <div class="row">
+      <div class="stat">
+        <div class="num">{{ stats.total }}</div>
+        <div class="label">词条数</div>
+      </div>
+      <div class="stat">
+        <div class="num">{{ stats.total_answers }}</div>
+        <div class="label">答案数</div>
+      </div>
+      <div class="stat">
+        <div class="num">{{ stats.avg_freq }}</div>
+        <div class="label">平均热度</div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>🔥 Top 热门问题</h2>
+      <table>
+        <tr>
+          <th>#</th>
+          <th>问题</th>
+          <th style="text-align: right">热度</th>
+          <th style="text-align: right">答案数</th>
+        </tr>
+        {% for q in stats.top_questions %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ q.text }}</td>
+          <td style="text-align: right">
+            <span class="freq">{{ q.freq }}</span>
+          </td>
+          <td style="text-align: right">{{ q.answers }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% if stats.groups %}
+    <div class="card">
+      <h2>📁 群分布</h2>
+      {% set max_count = stats.groups | map(attribute='count') | max %} {% for g
+      in stats.groups %}
+      <div
+        style="
+          display: flex;
+          align-items: center;
+          margin-bottom: 8px;
+          gap: 10px;
+        "
+      >
+        <span
+          style="
+            width: 120px;
+            font-size: 12px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          "
+          >{{ g.id }}</span
+        >
+        <div class="bar-wrap" style="flex: 1">
+          <div
+            class="bar"
+            style="width:{{ (g.count / max_count * 100)|int }}%"
+          ></div>
+        </div>
+        <span
+          style="font-size: 12px; color: #aaa; width: 40px; text-align: right"
+          >{{ g.count }}</span
+        >
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="sub" style="margin-top: 16px; text-align: center">
+      ChatLearning v0.2 · powered by AstrBot + LanceDB
+    </div>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+name: astrbot_plugin_chatlearning
+display_name: ChatLearning
+desc: 基于 LanceDB 向量嵌入的群聊对话学习与智能回复插件——从群聊中自动学习对话模式
+short_desc: 群聊对话学习与智能回复
+version: "0.2.0"
+author: "satori"
+repo: "https://github.com/haha-dream/astrbot_plugin_chatlearning"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
+  - wecom
+  - lark
+  - dingtalk
+  - discord
+  - kook
+  - slack
+astrbot_version: ">=4.24.2"

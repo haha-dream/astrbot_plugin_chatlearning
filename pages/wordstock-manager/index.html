@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ChatLearning 词库管理</title>
+    <style>
+      :root {
+        --bg: #f8f9fc;
+        --surface: #fff;
+        --text: #1e293b;
+        --text-secondary: #64748b;
+        --border: #e2e8f0;
+        --accent: #6366f1;
+        --accent-light: #eef2ff;
+        --danger: #ef4444;
+        --danger-light: #fef2f2;
+        --success: #22c55e;
+        --radius: 10px;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+        --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.08);
+      }
+      [data-theme="dark"] {
+        --bg: #0f172a;
+        --surface: #1e293b;
+        --text: #e2e8f0;
+        --text-secondary: #94a3b8;
+        --border: #334155;
+        --accent: #818cf8;
+        --accent-light: #1e1b4b;
+        --danger: #f87171;
+        --danger-light: #451a1a;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.4);
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        padding: 28px 24px;
+        max-width: 860px;
+        margin: 0 auto;
+        line-height: 1.5;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      header svg {
+        color: var(--accent);
+        flex-shrink: 0;
+      }
+      header h1 {
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--text);
+        letter-spacing: -0.3px;
+      }
+      .stats-row {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      .stat-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px 16px;
+        box-shadow: var(--shadow);
+        transition: box-shadow 0.15s;
+      }
+      .stat-card:hover {
+        box-shadow: var(--shadow-lg);
+      }
+      .stat-card .num {
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--accent);
+        letter-spacing: -1px;
+      }
+      .stat-card .label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-top: 2px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .search-wrap {
+        position: relative;
+        margin-bottom: 20px;
+      }
+      .search-wrap svg {
+        position: absolute;
+        left: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--text-secondary);
+        pointer-events: none;
+      }
+      .search-wrap input {
+        width: 100%;
+        padding: 11px 14px 11px 42px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text);
+        font-size: 14px;
+        box-shadow: var(--shadow);
+        transition: border-color 0.15s, box-shadow 0.15s;
+        outline: none;
+      }
+      .search-wrap input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-light);
+      }
+      table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        background: var(--surface);
+        border-radius: var(--radius);
+        overflow: hidden;
+        box-shadow: var(--shadow);
+        border: 1px solid var(--border);
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 10px 14px;
+        font-size: 13px;
+        border-bottom: 1px solid var(--border);
+      }
+      th {
+        color: var(--text-secondary);
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        background: var(--bg);
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      td a {
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 500;
+      }
+      td a:hover {
+        text-decoration: underline;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .badge-hot {
+        background: #fef3c7;
+        color: #92400e;
+      }
+      [data-theme="dark"] .badge-hot {
+        background: #451a03;
+        color: #fbbf24;
+      }
+      .badge-warm {
+        background: #e0e7ff;
+        color: #3730a3;
+      }
+      [data-theme="dark"] .badge-warm {
+        background: #1e1b4b;
+        color: #a5b4fc;
+      }
+      .badge-cool {
+        background: #f3f4f6;
+        color: #6b7280;
+      }
+      [data-theme="dark"] .badge-cool {
+        background: #374151;
+        color: #9ca3af;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 14px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        border: none;
+        transition: all 0.12s;
+      }
+      .btn-danger {
+        background: var(--danger-light);
+        color: var(--danger);
+      }
+      .btn-danger:hover {
+        background: var(--danger);
+        color: #fff;
+      }
+      .btn-ghost {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+      }
+      .btn-ghost:hover {
+        background: var(--accent-light);
+      }
+      .empty-state {
+        text-align: center;
+        padding: 48px 16px;
+        color: var(--text-secondary);
+      }
+      .empty-state svg {
+        margin-bottom: 12px;
+        opacity: 0.4;
+      }
+      .detail-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 20px;
+        box-shadow: var(--shadow);
+        margin-top: 16px;
+      }
+      .detail-card h3 {
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 8px;
+        color: var(--text);
+      }
+      .detail-meta {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+      .detail-meta span {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .answer-list {
+        list-style: none;
+        padding: 0;
+        margin: 12px 0;
+      }
+      .answer-list li {
+        padding: 8px 12px;
+        border-radius: 6px;
+        background: var(--bg);
+        margin-bottom: 6px;
+        font-size: 13px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .answer-list .count {
+        font-size: 11px;
+        color: var(--text-secondary);
+        background: var(--surface);
+        padding: 2px 8px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .toast {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1e293b;
+        color: #fff;
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        opacity: 0;
+        transition: opacity 0.2s;
+        pointer-events: none;
+        z-index: 999;
+      }
+      [data-theme="dark"] .toast {
+        background: #e2e8f0;
+        color: #1e293b;
+      }
+      .toast.show {
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        <path d="M8 9h8M8 13h6" />
+      </svg>
+      <h1>词库管理</h1>
+    </header>
+
+    <div class="stats-row" id="stats">
+      <div class="stat-card"><div class="num">—</div><div class="label">词条数</div></div>
+      <div class="stat-card"><div class="num">—</div><div class="label">答案数</div></div>
+      <div class="stat-card"><div class="num">—</div><div class="label">平均热度</div></div>
+    </div>
+
+    <div class="search-wrap">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      <input type="text" id="searchBox" placeholder="搜索词库…" autofocus />
+    </div>
+
+    <div id="results">
+      <div class="empty-state">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <p style="font-size:14px">输入关键词搜索词库</p>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+      const bridge = window.AstrBotPluginPage;
+      const $ = (s) => document.querySelector(s);
+
+      function toast(msg) {
+        const t = $("#toast");
+        t.textContent = msg;
+        t.classList.add("show");
+        clearTimeout(t._tid);
+        t._tid = setTimeout(() => t.classList.remove("show"), 2200);
+      }
+
+      function freqBadge(f) {
+        if (f >= 20) return `<span class="badge badge-hot">🔥 ${f}</span>`;
+        if (f >= 8) return `<span class="badge badge-warm">⭐ ${f}</span>`;
+        return `<span class="badge badge-cool">${f}</span>`;
+      }
+
+      async function loadStats() {
+        try {
+          const d = await bridge.apiGet("stats");
+          $("#stats").innerHTML =
+            `<div class="stat-card"><div class="num">${(d.total || 0).toLocaleString()}</div><div class="label">词条数</div></div>` +
+            `<div class="stat-card"><div class="num">${(d.total_answers || 0).toLocaleString()}</div><div class="label">答案数</div></div>` +
+            `<div class="stat-card"><div class="num">${d.avg_freq || 0}</div><div class="label">平均热度</div></div>`;
+        } catch (e) {
+          /* ignore */
+        }
+      }
+
+      let timer;
+      $("#searchBox").addEventListener("input", () => {
+        clearTimeout(timer);
+        timer = setTimeout(doSearch, 300);
+      });
+
+      async function doSearch() {
+        const q = $("#searchBox").value.trim();
+        if (!q) {
+          return ($("#results").innerHTML =
+            '<div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><p style="font-size:14px">输入关键词搜索词库</p></div>');
+        }
+        try {
+          const items = await bridge.apiGet("search", { q });
+          if (!items.length) {
+            return ($("#results").innerHTML =
+              '<div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 13h6"/></svg><p style="font-size:14px">未找到匹配</p></div>');
+          }
+          let h =
+            "<table><thead><tr><th>ID</th><th>问题</th><th>热度</th><th>答案</th><th></th></tr></thead><tbody>";
+          items.forEach((it) => {
+            h += `<tr>
+              <td style="color:var(--text-secondary);font-size:11px;font-family:monospace">#${it.id}</td>
+              <td><a href="#" onclick="showDetail(${it.id});return false">${esc(it.question_text.substring(0, 45))}${it.question_text.length > 45 ? "…" : ""}</a></td>
+              <td>${freqBadge(it.freq)}</td>
+              <td style="color:var(--text-secondary)">${it.answer_count}</td>
+              <td><button class="btn btn-danger" onclick="doDelete(${it.id})">删除</button></td></tr>`;
+          });
+          h += "</tbody></table>";
+          $("#results").innerHTML = h;
+        } catch (e) {
+          toast("搜索失败");
+        }
+      }
+
+      async function showDetail(id) {
+        try {
+          const it = await bridge.apiGet("entry", { id });
+          if (it.error) return toast("未找到");
+          let ans = "";
+          if (it.answers && it.answers.length) {
+            it.answers.forEach((a) => {
+              ans += `<li><span>${esc(a.answertext)}</span><span class="count">×${a.same}</span></li>`;
+            });
+          } else {
+            ans = '<li style="justify-content:center;color:var(--text-secondary)">暂无答案</li>';
+          }
+          const date = new Date(it.created_at * 1000);
+          const dateStr = date.toLocaleDateString("zh-CN") + " " + date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+          $("#results").innerHTML = `
+            <div class="detail-card">
+              <h3>${esc(it.question_text)}</h3>
+              <div class="detail-meta">
+                <span>🆔 #${it.id}</span>
+                <span>🔥 热度 ${it.freq}</span>
+                <span>📅 ${dateStr}</span>
+              </div>
+              <ul class="answer-list">${ans}</ul>
+              <div class="actions">
+                <button class="btn btn-danger" onclick="doDelete(${it.id})">🗑 删除词条</button>
+                <button class="btn btn-ghost" onclick="doSearch()">← 返回列表</button>
+              </div>
+            </div>`;
+        } catch (e) {
+          toast("加载失败");
+        }
+      }
+
+      async function doDelete(id) {
+        if (!confirm("确定删除词条 #" + id + "？此操作不可恢复。")) return;
+        try {
+          const r = await bridge.apiPost("delete", { id });
+          if (r.ok) {
+            toast("已删除 #" + id);
+            doSearch();
+            loadStats();
+          } else {
+            toast("删除失败");
+          }
+        } catch (e) {
+          toast("删除失败");
+        }
+      }
+
+      function esc(s) {
+        const d = document.createElement("div");
+        d.textContent = s;
+        return d.innerHTML;
+      }
+
+      bridge.ready().then(loadStats);
+    </script>
+  </body>
+</html>

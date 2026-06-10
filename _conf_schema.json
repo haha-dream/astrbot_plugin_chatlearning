@@ -1,0 +1,177 @@
+{
+  "learning": {
+    "description": "学习模式",
+    "type": "bool",
+    "hint": "开启后自动从群聊中采集对话",
+    "default": false
+  },
+  "reply": {
+    "description": "回复模式",
+    "type": "bool",
+    "hint": "开启后根据学习的词库自动回复",
+    "default": false
+  },
+  "interval": {
+    "description": "词库链间隔（秒）",
+    "type": "int",
+    "hint": "两条消息间隔超过此时间则视为新对话的起点。太短导致链破碎，太长导致无关消息被关联，建议 10~30",
+    "default": 10
+  },
+  "learning_groups": {
+    "description": "学习群列表",
+    "type": "list",
+    "hint": "开启学习的群 ID，留空表示所有群",
+    "default": []
+  },
+  "reply_groups": {
+    "description": "回复群列表",
+    "type": "list",
+    "hint": "开启回复的群 ID，留空表示所有群",
+    "default": []
+  },
+  "reply_chance": {
+    "description": "回复概率（%）",
+    "type": "int",
+    "hint": "匹配到词库后实际发送回复的概率。太高显得烦人，太低没存在感，建议 30~60",
+    "default": 50
+  },
+  "reply_cd": {
+    "description": "回复冷却（秒）",
+    "type": "int",
+    "hint": "同一群两次回复的最小间隔",
+    "default": 30
+  },
+  "cos_match_threshold": {
+    "description": "向量相似度阈值",
+    "type": "float",
+    "hint": "0.0~1.0。越高越严格（只回复高度相似的），越低越宽松（容易牛头不对马嘴）。建议 0.70~0.80",
+    "default": 0.75
+  },
+  "at_reply_only": {
+    "description": "仅被 @ 时回复",
+    "type": "bool",
+    "hint": "开启后只有被群成员 @ 时才触发回复",
+    "default": false
+  },
+  "bot_names": {
+    "description": "Bot 昵称",
+    "type": "list",
+    "hint": "用于 {me} 占位符随机替换，如 [\"小明\", \"阿明\"]",
+    "default": []
+  },
+  "embedding_provider_id": {
+    "description": "向量模型",
+    "type": "string",
+    "hint": "在线模式必填。填写 WebUI 提供商管理中 Embedding 类型的提供商名称。若启用下方「本地向量模型」，此项可留空",
+    "default": ""
+  },
+  "enable_local_embedding": {
+    "description": "启用本地向量模型",
+    "type": "bool",
+    "hint": "使用内置 sentence-transformers 在本地运行 BAAI/bge-small-zh-v1.5（约 96MB）。零费用、零延迟、无限速。勾选后下方「向量模型」可留空",
+    "default": false
+  },
+  "local_embedding_model": {
+    "description": "本地向量模型名称",
+    "type": "string",
+    "hint": "HuggingFace 模型名。默认 BAAI/bge-small-zh-v1.5（轻量），可选 BAAI/bge-m3（高质量，较大）",
+    "default": "BAAI/bge-small-zh-v1.5"
+  },
+  "llm_semantic_check": {
+    "description": "LLM 语义二次判断",
+    "type": "bool",
+    "hint": "向量相似度处于灰色区间时，使用 LLM 二次确认语义是否匹配（消耗 token）",
+    "default": false
+  },
+  "llm_provider_id": {
+    "description": "语义判断 LLM",
+    "type": "string",
+    "_special": "select_provider",
+    "hint": "用于语义二次判断的 LLM。仅做 YES/NO 判断，建议使用免费或低价模型以节省成本",
+    "default": ""
+  },
+  "llm_semantic_threshold": {
+    "description": "LLM 灰色区间下限",
+    "type": "float",
+    "hint": "余弦相似度低于主阈值但高于此值时，进入 LLM 二次判断。低于此值直接丢弃。建议 0.40~0.55",
+    "default": 0.5
+  },
+  "cross_group_search": {
+    "description": "跨群词库搜索",
+    "type": "bool",
+    "hint": "本群无匹配结果时，自动搜索其他群的学习数据",
+    "default": false
+  },
+  "auto_cleanup_days": {
+    "description": "自动清理天数",
+    "type": "int",
+    "hint": "超过此天数未更新且热度 < 2 的词条将被自动清理。0 表示不自动清理",
+    "default": 30
+  },
+  "max_answers_per_question": {
+    "description": "每个问题最大答案数",
+    "type": "int",
+    "hint": "超出后最早添加的答案会被移除",
+    "default": 20
+  },
+  "persona_fusion_mode": {
+    "description": "人格融合模式",
+    "type": "string",
+    "options": ["off", "blend", "full"],
+    "hint": "off=纯词库回复 / blend=LLM 润色词库回复 / full=LLM 读完词库上下文后自由生成。需要下方配置融合 LLM",
+    "default": "off"
+  },
+  "persona_fusion_provider": {
+    "description": "融合 LLM",
+    "type": "string",
+    "_special": "select_provider",
+    "hint": "用于人格融合的 LLM。建议使用带人格配置的主力模型",
+    "default": ""
+  },
+  "persona_fusion_persona": {
+    "description": "融合人格",
+    "type": "string",
+    "_special": "select_persona",
+    "hint": "融合时使用的人格。在 WebUI 人格管理中事先创建",
+    "default": ""
+  },
+  "auto_schedule_enable": {
+    "description": "定时切换开关",
+    "type": "bool",
+    "hint": "开启后按下方时间自动切换学习/回复模式",
+    "default": false
+  },
+  "auto_schedule_learn_on": {
+    "description": "自动开启学习（HH:MM）",
+    "type": "string",
+    "hint": "留空不自动切换。格式如 08:00",
+    "default": ""
+  },
+  "auto_schedule_learn_off": {
+    "description": "自动关闭学习（HH:MM）",
+    "type": "string",
+    "default": ""
+  },
+  "auto_schedule_reply_on": {
+    "description": "自动开启回复（HH:MM）",
+    "type": "string",
+    "default": ""
+  },
+  "auto_schedule_reply_off": {
+    "description": "自动关闭回复（HH:MM）",
+    "type": "string",
+    "default": ""
+  },
+  "sensitive_words": {
+    "description": "敏感词",
+    "type": "list",
+    "hint": "包含这些词的消息不会被记录到词库",
+    "default": []
+  },
+  "blocked_users": {
+    "description": "黑名单用户",
+    "type": "list",
+    "hint": "这些用户的消息不会被记录",
+    "default": []
+  }
+}

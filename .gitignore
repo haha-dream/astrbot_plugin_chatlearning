@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# LanceDB data (generated at runtime)
+plugin_data/
+
+# Export / backup files
+*.export.json
+
+# Ruff
+.ruff_cache/
+
+# Logs
+*.log
