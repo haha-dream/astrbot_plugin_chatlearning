@@ -143,14 +143,17 @@ async def migrate(args):
         from sentence_transformers import SentenceTransformer
 
         print(f"加载本地模型: {args.local_model} ...")
-        cache_dir = os.path.join(str(new_dir.parent), "hf_cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        model = await asyncio.to_thread(
-            SentenceTransformer,
-            args.local_model,
-            cache_folder=cache_dir,
-            local_files_only=False,
+        os.environ.setdefault(
+            "SENTENCE_TRANSFORMERS_HOME", str(new_dir.parent / "hf_cache")
         )
+
+        try:
+            model = await asyncio.to_thread(
+                SentenceTransformer, args.local_model, local_files_only=True
+            )
+        except Exception:
+            print("缓存未命中，从远程下载...")
+            model = await asyncio.to_thread(SentenceTransformer, args.local_model)
         print("模型加载完成")
 
         async def embed(text: str) -> list[float]:

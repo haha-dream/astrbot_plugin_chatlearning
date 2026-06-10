@@ -524,8 +524,6 @@ class ChatLearningPlugin(Star):
         async with self._model_lock:
             if self._local_model is None:
                 try:
-                    from sentence_transformers import SentenceTransformer
-
                     from astrbot.core.utils.astrbot_path import (
                         get_astrbot_plugin_data_path,
                     )
@@ -537,11 +535,20 @@ class ChatLearningPlugin(Star):
                     cache_dir = os.path.join(
                         get_astrbot_plugin_data_path(), self.name, "hf_cache"
                     )
-                    os.makedirs(cache_dir, exist_ok=True)
+                    os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", cache_dir)
+
+                    from sentence_transformers import SentenceTransformer
+
                     logger.debug(f"[ChatLearning] 加载本地模型: {model_name}")
-                    self._local_model = await asyncio.to_thread(
-                        SentenceTransformer, model_name, cache_folder=cache_dir
-                    )
+                    try:
+                        self._local_model = await asyncio.to_thread(
+                            SentenceTransformer, model_name, local_files_only=True
+                        )
+                    except Exception:
+                        logger.debug("[ChatLearning] 缓存未命中，从远程下载...")
+                        self._local_model = await asyncio.to_thread(
+                            SentenceTransformer, model_name
+                        )
                     logger.debug("[ChatLearning] 本地模型加载完成")
                 except ImportError:
                     logger.error("[ChatLearning] sentence-transformers 未安装")
