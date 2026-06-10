@@ -221,32 +221,44 @@ class ChatLearningPlugin(Star):
         if qa is None:
             return
 
-        ans_vec = await self._get_embedding(qa.answer_text)
-        if ans_vec is None:
-            return
-
+        # 先查 DB（快），确定哪些需要 embedding，再批量生成
         ans_exist = await self.wordstock.get_by_text(qa.group_id, qa.answer_text)
+        q_exist = await self.wordstock.get_by_text(qa.group_id, qa.question_text)
+
+        need_embed = []
+        if not ans_exist:
+            need_embed.append(qa.answer_text)
+        if not q_exist:
+            need_embed.append(qa.question_text)
+
+        vecs = {}
+        if need_embed:
+            batch = await self._get_embeddings_batch(need_embed)
+            for t, v in zip(need_embed, batch):
+                if v is not None:
+                    vecs[t] = v
+
+        # 1) 答案侧
         if ans_exist:
             await self.wordstock.touch(ans_exist["id"])
-        else:
+        elif qa.answer_text in vecs:
             await self.wordstock.add_question(
-                qa.group_id, qa.answer_text, qa.answer_raw, ans_vec
+                qa.group_id, qa.answer_text, qa.answer_raw, vecs[qa.answer_text]
             )
+        else:
+            return
 
-        q_exist = await self.wordstock.get_by_text(qa.group_id, qa.question_text)
+        # 2) 问题侧
         if q_exist:
             await self.wordstock.add_answer(
                 q_exist["id"], qa.answer_text, qa.answer_raw
             )
-        else:
-            q_vec = await self._get_embedding(qa.question_text)
-            if q_vec is None:
-                return
+        elif qa.question_text in vecs:
             await self.wordstock.add_question(
                 qa.group_id,
                 qa.question_text,
                 qa.question_raw,
-                q_vec,
+                vecs[qa.question_text],
                 answer_text=qa.answer_text,
                 answer_raw=qa.answer_raw,
             )
@@ -566,6 +578,38 @@ class ChatLearningPlugin(Star):
         except Exception as e:
             logger.error(f"[ChatLearning] 本地 embedding 失败: {e}")
             return None
+
+    async def _get_embeddings_batch(self, texts: list[str]) -> list[list[float] | None]:
+        """批量生成向量，比逐个调用效率高得多。"""
+        cleaned = [t for t in texts if t.strip()]
+        if not cleaned:
+            return [None] * len(texts)
+
+        result = [None] * len(texts)
+        clean_indices = [i for i, t in enumerate(texts) if t.strip()]
+
+        if self._C("enable_local_embedding"):
+            async with self._model_lock:
+                if self._local_model is None:
+                    await self._local_embed(cleaned[0])
+                    if self._local_model is None:
+                        return result
+            vecs = await asyncio.to_thread(
+                self._local_model.encode,
+                cleaned,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+            for idx, vec in zip(clean_indices, vecs.tolist()):
+                result[idx] = vec
+                self._embed_cache[texts[idx]] = vec
+                while len(self._embed_cache) > self._embed_cache_max:
+                    self._embed_cache.popitem(last=False)
+        else:
+            for idx in clean_indices:
+                result[idx] = await self._get_embedding(texts[idx])
+
+        return result
 
     # ═══ 指令: /learn ═════════════════════════════════════════
 
