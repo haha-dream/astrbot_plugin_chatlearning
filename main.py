@@ -318,11 +318,18 @@ class ChatLearningPlugin(Star):
 
         fusion_mode = self._C("persona_fusion_mode", "off")
         if fusion_mode in ("blend", "full"):
-            prompt = self._build_fusion_prompt(text, result.answer_text, fusion_mode)
-            persona_prompt = await self._get_fusion_persona_prompt()
-            req = event.request_llm(prompt=prompt, system_prompt=persona_prompt or "")
-            yield req
-            event.stop_event()
+            fused = await self._persona_fusion(
+                event, text, result.answer_text, fusion_mode
+            )
+            if fused:
+                await asyncio.sleep(random.uniform(0.5, 2.0))
+                self._reply_count = getattr(self, "_reply_count", 0) + 1
+                logger.info(
+                    f"[ChatLearning] 回复 #{self._reply_count}: "
+                    f"Q={text[:20]} → A={fused[:20]}"
+                )
+                event.stop_event()
+                yield event.plain_result(fused)
             return
 
         await asyncio.sleep(random.uniform(0.5, 2.0))
@@ -334,6 +341,25 @@ class ChatLearningPlugin(Star):
         )
         event.stop_event()
         yield event.plain_result(text_out)
+
+    async def _persona_fusion(self, event, query, matched_answer, mode):
+        """用配置的融合 LLM 润色或生成回复。"""
+        pid = (self._C("persona_fusion_provider", "") or "").strip()
+        if not pid:
+            return None
+        prov = self.context.get_provider_by_id(pid)
+        if not prov:
+            return None
+        persona_prompt = await self._get_fusion_persona_prompt()
+        prompt = self._build_fusion_prompt(query, matched_answer, mode)
+        try:
+            resp = await prov.text_chat(
+                prompt=prompt, system_prompt=persona_prompt or None
+            )
+            return (resp.completion_text or "").strip()
+        except Exception as e:
+            logger.warning(f"[ChatLearning] 融合生成失败: {e}")
+            return None
 
     async def _get_fusion_persona_prompt(self):
         pid = (self._C("persona_fusion_persona", "") or "").strip()
