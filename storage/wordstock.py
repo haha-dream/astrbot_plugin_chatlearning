@@ -114,6 +114,12 @@ class WordStock:
         now = time.time()
         if self._vec_dim is None:
             self._vec_dim = len(vector)
+        elif len(vector) != self._vec_dim:
+            logger.error(
+                f"[WordStock] 向量维度不匹配！已有 {self._vec_dim} 维，"
+                f"当前 {len(vector)} 维。请删除旧数据后重试。"
+            )
+            return 0
 
         answers = []
         if answer_text or answer_raw:
@@ -207,6 +213,12 @@ class WordStock:
     ) -> list[dict]:
         """向量相似搜索，返回 top_k 条满足阈值的记录。"""
         if self._table is None:
+            return []
+        if self._vec_dim and len(query_vec) != self._vec_dim:
+            logger.error(
+                f"[WordStock] 查询向量 {len(query_vec)} 维 != 词库 {self._vec_dim} 维！"
+                "请删除旧数据或切换匹配的 embedding 模型。"
+            )
             return []
 
         try:
