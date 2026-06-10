@@ -39,20 +39,6 @@ _answer_struct = pa.struct(
     ]
 )
 
-_wordstock_schema = pa.schema(
-    [
-        pa.field("id", pa.int64()),
-        pa.field("group_id", pa.string()),
-        pa.field("question_text", pa.string()),
-        pa.field("question_raw", pa.string()),
-        pa.field("vec", pa.list_(pa.float32(), -1)),  # -1 = variable dim
-        pa.field("answers", pa.list_(_answer_struct)),
-        pa.field("freq", pa.int32()),
-        pa.field("created_at", pa.float64()),
-        pa.field("updated_at", pa.float64()),
-    ]
-)
-
 TABLE_NAME = "qa_pairs"
 
 
@@ -75,23 +61,16 @@ class WordStock:
         existing = await self._db.table_names()
         if TABLE_NAME in existing:
             self._table = await self._db.open_table(TABLE_NAME)
-            logger.info(f"LanceDB 词库已打开: {self.db_path}")
+            logger.debug(f"LanceDB 词库已打开: {self.db_path}")
+            # 探测已有向量维度
+            records = await self._table.query().limit(1).to_arrow()
+            if records.num_rows > 0:
+                vec_col = records.column("vec")
+                if vec_col[0].as_py():
+                    self._vec_dim = len(vec_col[0].as_py())
+                    logger.debug(f"[WordStock] 向量维度: {self._vec_dim}")
         else:
-            # 空表：先创建，后续第一次写入时确定 vec 维度
-            self._table = await self._db.create_table(
-                TABLE_NAME,
-                schema=_wordstock_schema,
-                mode="create",
-            )
-            logger.info(f"LanceDB 词库已创建: {self.db_path}")
-
-        # 探测已有向量维度
-        records = await self._table.query().limit(1).to_arrow()
-        if records.num_rows > 0:
-            vec_col = records.column("vec")
-            if vec_col[0].as_py():
-                self._vec_dim = len(vec_col[0].as_py())
-                logger.info(f"[WordStock] 检测到已有数据，向量维度: {self._vec_dim}")
+            logger.debug(f"LanceDB 词库将在首次写入时创建: {self.db_path}")
 
     async def close(self):
         """关闭 LanceDB 连接，释放后台线程。"""
@@ -124,6 +103,27 @@ class WordStock:
                 f"当前 {len(vector)} 维。请删除旧数据后重试。"
             )
             return 0
+
+        # 首次写入：用实际维度创建表
+        if self._table is None:
+            vec_dim = len(vector)
+            _schema = pa.schema(
+                [
+                    pa.field("id", pa.int64()),
+                    pa.field("group_id", pa.string()),
+                    pa.field("question_text", pa.string()),
+                    pa.field("question_raw", pa.string()),
+                    pa.field("vec", pa.list_(pa.float32(), vec_dim)),
+                    pa.field("answers", pa.list_(_answer_struct)),
+                    pa.field("freq", pa.int32()),
+                    pa.field("created_at", pa.float64()),
+                    pa.field("updated_at", pa.float64()),
+                ]
+            )
+            self._table = await self._db.create_table(
+                TABLE_NAME, schema=_schema, mode="create"
+            )
+            logger.debug(f"LanceDB 词库已创建，向量维度: {vec_dim}")
 
         answers = []
         if answer_text or answer_raw:
@@ -234,7 +234,7 @@ class WordStock:
         top_k: int = 20,
     ) -> list[dict]:
         """向量相似搜索，返回 top_k 条满足阈值的记录。"""
-        if self._table is None:
+        if self._table is None or self._vec_dim is None:
             return []
         if self._vec_dim and len(query_vec) != self._vec_dim:
             logger.error(
