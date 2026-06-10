@@ -163,22 +163,31 @@ class WordStock:
         answer_raw: str,
     ) -> bool:
         """向已有问题追加（或合并）答案。如答案已存在则增加 same 计数。"""
-        # 读取当前记录
         result = await self._table.query().where(f"id = {record_id}").to_arrow()
         if result.num_rows == 0:
             logger.warning(f"[WordStock] add_answer: id={record_id} 不存在")
             return False
 
         row = result.to_pylist()[0]
-        answers: list = row["answers"] or []
         now = time.time()
 
-        # 检查是否已有相同答案（比较纯文本）
+        # Arrow struct → 纯 Python dict（to_pylist 不会递归转换嵌套 struct）
+        answers = []
+        for a in row["answers"] or []:
+            answers.append(
+                {
+                    "answertext": str(a["answertext"]),
+                    "answer_raw": str(a["answer_raw"]),
+                    "added_at": float(a["added_at"]),
+                    "same": int(a["same"]),
+                }
+            )
+
         merged = False
         for ans in answers:
             if ans["answertext"] == answer_text:
-                ans["same"] = ans.get("same", 1) + 1
-                ans["added_at"] = now  # 更新最近出现时间
+                ans["same"] += 1
+                ans["added_at"] = now
                 merged = True
                 break
 
@@ -192,24 +201,13 @@ class WordStock:
                 }
             )
 
-        # 超出上限时裁剪最早的答案
         max_ans = getattr(self, "max_answers", 0) or 20
         if len(answers) > max_ans:
             answers.sort(key=lambda a: a.get("added_at", 0))
             answers = answers[-max_ans:]
 
-        # LanceDB update — 转为纯 dict 列表（Arrow struct → Python dict）
-        plain_answers = [
-            {
-                "answertext": str(a["answertext"]),
-                "answer_raw": str(a["answer_raw"]),
-                "added_at": float(a["added_at"]),
-                "same": int(a["same"]),
-            }
-            for a in answers
-        ]
         await self._table.update(
-            {"answers": plain_answers, "freq": row["freq"] + 1, "updated_at": now},
+            {"answers": answers, "freq": row["freq"] + 1, "updated_at": now},
             where=f"id = {record_id}",
         )
         logger.debug(f"[WordStock] 追加答案: id={record_id} merged={merged}")
