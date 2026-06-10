@@ -174,6 +174,9 @@ class ChatLearningPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
+        if not self.wordstock or not self.filter_engine or not self.collector:
+            return
+
         group_id = event.get_group_id()
         if not group_id:
             return
