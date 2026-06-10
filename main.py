@@ -266,6 +266,8 @@ class ChatLearningPlugin(Star):
         self._write_count = getattr(self, "_write_count", 0) + 1
         if self._write_count % 100 == 0:
             await self.wordstock.ensure_index()
+        if self._write_count % 10 == 0:
+            logger.info(f"[ChatLearning] 已学习 {self._write_count} 条")
 
     # ═══ 回复 ═════════════════════════════════════════════════
 
@@ -321,6 +323,11 @@ class ChatLearningPlugin(Star):
 
         await asyncio.sleep(random.uniform(0.5, 2.0))
         text_out = self._apply_placeholders(result.answer_text, event)
+        self._reply_count = getattr(self, "_reply_count", 0) + 1
+        logger.info(
+            f"[ChatLearning] 回复 #{self._reply_count}: "
+            f"Q={text[:20]} → A={result.answer_text[:20]}"
+        )
         yield event.plain_result(text_out)
 
     async def _get_fusion_persona_prompt(self):
