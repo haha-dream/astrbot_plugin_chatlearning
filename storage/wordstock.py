@@ -93,7 +93,9 @@ class WordStock:
                 self._vec_dim = len(vec_col[0].as_py())
 
     async def close(self):
-        """LanceDB 无需显式关闭，这里做清理标记。"""
+        """关闭 LanceDB 连接，释放后台线程。"""
+        if self._db is not None:
+            await self._db.close()
         self._table = None
         self._db = None
 
