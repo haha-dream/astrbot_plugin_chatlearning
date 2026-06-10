@@ -138,7 +138,10 @@ async def migrate(args):
         cache_dir = os.path.join(str(new_dir.parent), "hf_cache")
         os.makedirs(cache_dir, exist_ok=True)
         model = await asyncio.to_thread(
-            SentenceTransformer, args.local_model, cache_folder=cache_dir
+            SentenceTransformer,
+            args.local_model,
+            cache_folder=cache_dir,
+            local_files_only=False,
         )
         print("模型加载完成")
 

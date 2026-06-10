@@ -40,6 +40,7 @@ class ChatLearningPlugin(Star):
         self._embedding_ready: bool = False
         self._embedding_warned: bool = False
         self._local_model: object | None = None
+        self._model_lock = asyncio.Lock()
         self._embed_cache: OrderedDict[str, list[float]] = OrderedDict()
         self._embed_cache_max = 3000
         self._recent_replies: dict[str, list[tuple]] = {}
@@ -517,30 +518,35 @@ class ChatLearningPlugin(Star):
         return result
 
     async def _local_embed(self, text):
-        if self._local_model is None:
-            try:
-                from sentence_transformers import SentenceTransformer
+        async with self._model_lock:
+            if self._local_model is None:
+                try:
+                    from sentence_transformers import SentenceTransformer
+                    from astrbot.core.utils.astrbot_path import (
+                        get_astrbot_plugin_data_path,
+                    )
 
-                model_name = self._C("local_embedding_model", "BAAI/bge-small-zh-v1.5")
-                os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-                # 显式缓存目录，避免线程池中找不到默认路径
-                cache_dir = os.path.join(
-                    get_astrbot_plugin_data_path(), self.name, "hf_cache"
-                )
-                os.makedirs(cache_dir, exist_ok=True)
-                logger.info(f"[ChatLearning] 加载本地模型: {model_name}")
-                self._local_model = await asyncio.to_thread(
-                    SentenceTransformer, model_name, cache_folder=cache_dir
-                )
-                logger.info("[ChatLearning] 本地模型加载完成")
-            except ImportError:
-                logger.error("[ChatLearning] sentence-transformers 未安装")
-                self._embedding_ready = False
-                return None
-            except Exception as e:
-                logger.error(f"[ChatLearning] 本地模型加载失败: {e}")
-                self._embedding_ready = False
-                return None
+                    model_name = self._C(
+                        "local_embedding_model", "BAAI/bge-small-zh-v1.5"
+                    )
+                    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+                    cache_dir = os.path.join(
+                        get_astrbot_plugin_data_path(), self.name, "hf_cache"
+                    )
+                    os.makedirs(cache_dir, exist_ok=True)
+                    logger.info(f"[ChatLearning] 加载本地模型: {model_name}")
+                    self._local_model = await asyncio.to_thread(
+                        SentenceTransformer, model_name, cache_folder=cache_dir
+                    )
+                    logger.info("[ChatLearning] 本地模型加载完成")
+                except ImportError:
+                    logger.error("[ChatLearning] sentence-transformers 未安装")
+                    self._embedding_ready = False
+                    return None
+                except Exception as e:
+                    logger.error(f"[ChatLearning] 本地模型加载失败: {e}")
+                    self._embedding_ready = False
+                    return None
         try:
             vec = await asyncio.to_thread(
                 self._local_model.encode, text, normalize_embeddings=True
