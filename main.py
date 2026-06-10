@@ -523,9 +523,14 @@ class ChatLearningPlugin(Star):
 
                 model_name = self._C("local_embedding_model", "BAAI/bge-small-zh-v1.5")
                 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+                # 显式缓存目录，避免线程池中找不到默认路径
+                cache_dir = os.path.join(
+                    get_astrbot_plugin_data_path(), self.name, "hf_cache"
+                )
+                os.makedirs(cache_dir, exist_ok=True)
                 logger.info(f"[ChatLearning] 加载本地模型: {model_name}")
                 self._local_model = await asyncio.to_thread(
-                    SentenceTransformer, model_name
+                    SentenceTransformer, model_name, cache_folder=cache_dir
                 )
                 logger.info("[ChatLearning] 本地模型加载完成")
             except ImportError:
