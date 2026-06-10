@@ -19,6 +19,7 @@ Schema:
   updated_at: float64    — 最后更新时间
 """
 
+import asyncio
 import os
 import time
 
@@ -208,6 +209,11 @@ class WordStock:
 
     # ── 查询 ────────────────────────────────────────────────
 
+    @staticmethod
+    async def _run_async(fn, *args, **kwargs):
+        """在默认线程池中执行，防止 LanceDB 同步 I/O 阻塞事件循环。"""
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
     async def search_similar(
         self,
         group_id: str,
@@ -225,15 +231,18 @@ class WordStock:
             )
             return []
 
-        try:
-            results = (
-                await self._table.query()
+        async def _query():
+            return (
+                self._table.query()
                 .nearest_to(query_vec)
                 .where(f"group_id = '{group_id}'")
                 .distance_type("cosine")
                 .limit(top_k)
                 .to_arrow()
             )
+
+        try:
+            results = await self._run_async(_query)
         except Exception as e:
             logger.error(f"[WordStock] 搜索失败: {e}")
             return []
@@ -266,11 +275,15 @@ class WordStock:
     async def get_by_text(self, group_id: str, question_text: str) -> dict | None:
         """按 group_id + 精确文本 获取单条记录（用于判断问题是否已存在）。"""
         escaped = question_text.replace("'", "''")
-        result = (
-            await self._table.query()
-            .where(f"group_id = '{group_id}' AND question_text = '{escaped}'")
-            .to_arrow()
-        )
+
+        async def _query():
+            return (
+                self._table.query()
+                .where(f"group_id = '{group_id}' AND question_text = '{escaped}'")
+                .to_arrow()
+            )
+
+        result = await self._run_async(_query)
         if result.num_rows == 0:
             return None
         return result.to_pylist()[0]
@@ -328,13 +341,17 @@ class WordStock:
         try:
             # LanceDB 不支持 != 操作符直接做 nearest search，
             # 所以我们：1) 全局 nearest search 取足够多候选 → 2) Python 侧过滤
-            results = (
-                await self._table.query()
-                .nearest_to(query_vec)
-                .distance_type("cosine")
-                .limit(top_k * 5)  # 多取一些以补偿过滤损失
-                .to_arrow()
-            )
+
+            async def _query():
+                return (
+                    self._table.query()
+                    .nearest_to(query_vec)
+                    .distance_type("cosine")
+                    .limit(top_k * 5)
+                    .to_arrow()
+                )
+
+            results = await self._run_async(_query)
         except Exception as e:
             logger.error(f"[WordStock] 跨群搜索失败: {e}")
             return []
