@@ -67,7 +67,7 @@ class ChatLearningPlugin(Star):
     # ═══ 生命周期 ═════════════════════════════════════════════
 
     async def initialize(self):
-        logger.info("[ChatLearning] 初始化中...")
+        logger.debug("[ChatLearning] 初始化中...")
 
         from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
@@ -89,7 +89,7 @@ class ChatLearningPlugin(Star):
                 if llm_p:
                     self._llm_check_provider_id = llm_pid
                     llm_check_fn = self._llm_semantic_check
-                    logger.info(f"[ChatLearning] LLM 语义检查: {llm_pid}")
+                    logger.debug(f"[ChatLearning] LLM 语义检查: {llm_pid}")
                 else:
                     logger.warning(f"[ChatLearning] llm_provider_id '{llm_pid}' 未找到")
             else:
@@ -134,7 +134,7 @@ class ChatLearningPlugin(Star):
                 )
                 if found:
                     self._embedding_ready = True
-                    logger.info(f"[ChatLearning] Embedding Provider: {target_id}")
+                    logger.debug(f"[ChatLearning] Embedding Provider: {target_id}")
                 else:
                     self._embedding_ready = False
                     logger.warning(
@@ -376,7 +376,7 @@ class ChatLearningPlugin(Star):
                             days=days, min_freq=2
                         )
                         if cleaned:
-                            logger.info(f"[ChatLearning] 自动清理: {cleaned} 条")
+                            logger.debug(f"[ChatLearning] 自动清理: {cleaned} 条")
                     await self.wordstock.build_index()
                     last_cleanup = now
             except asyncio.CancelledError:
@@ -496,7 +496,7 @@ class ChatLearningPlugin(Star):
         if not self._embedding_ready:
             if not self._embedding_warned:
                 self._embedding_warned = True
-                logger.warning("[ChatLearning] embedding 不可用")
+                logger.debug("[ChatLearning] embedding 不可用")
             return None
 
         result = None
@@ -525,6 +525,7 @@ class ChatLearningPlugin(Star):
             if self._local_model is None:
                 try:
                     from sentence_transformers import SentenceTransformer
+
                     from astrbot.core.utils.astrbot_path import (
                         get_astrbot_plugin_data_path,
                     )
@@ -537,11 +538,11 @@ class ChatLearningPlugin(Star):
                         get_astrbot_plugin_data_path(), self.name, "hf_cache"
                     )
                     os.makedirs(cache_dir, exist_ok=True)
-                    logger.info(f"[ChatLearning] 加载本地模型: {model_name}")
+                    logger.debug(f"[ChatLearning] 加载本地模型: {model_name}")
                     self._local_model = await asyncio.to_thread(
                         SentenceTransformer, model_name, cache_folder=cache_dir
                     )
-                    logger.info("[ChatLearning] 本地模型加载完成")
+                    logger.debug("[ChatLearning] 本地模型加载完成")
                 except ImportError:
                     logger.error("[ChatLearning] sentence-transformers 未安装")
                     self._embedding_ready = False

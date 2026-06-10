@@ -75,39 +75,46 @@ def iter_old_wordstock(db_path: str):
                 ans_plain = str(answer_raw_text).strip()
 
             if ans_plain:
-                answers.append({
-                    "answertext": ans_plain,
-                    "answer_raw": str(answer_raw_text),
-                    "added_at": time.time(),
-                    "same": max(1, int(a.get("same", 1))),
-                })
+                answers.append(
+                    {
+                        "answertext": ans_plain,
+                        "answer_raw": str(answer_raw_text),
+                        "added_at": time.time(),
+                        "same": max(1, int(a.get("same", 1))),
+                    }
+                )
 
         yield row["id"], question_text, question_raw, freq, answers
 
 
 # ── 新版 LanceDB schema ─────────────────────────────────────
 
-_answer_struct = pa.struct([
-    pa.field("answertext", pa.string()),
-    pa.field("answer_raw", pa.string()),
-    pa.field("added_at", pa.float64()),
-    pa.field("same", pa.int32()),
-])
+_answer_struct = pa.struct(
+    [
+        pa.field("answertext", pa.string()),
+        pa.field("answer_raw", pa.string()),
+        pa.field("added_at", pa.float64()),
+        pa.field("same", pa.int32()),
+    ]
+)
 
-_new_schema = pa.schema([
-    pa.field("id", pa.int64()),
-    pa.field("group_id", pa.string()),
-    pa.field("question_text", pa.string()),
-    pa.field("question_raw", pa.string()),
-    pa.field("vec", pa.list_(pa.float32(), -1)),
-    pa.field("answers", pa.list_(_answer_struct)),
-    pa.field("freq", pa.int32()),
-    pa.field("created_at", pa.float64()),
-    pa.field("updated_at", pa.float64()),
-])
+_new_schema = pa.schema(
+    [
+        pa.field("id", pa.int64()),
+        pa.field("group_id", pa.string()),
+        pa.field("question_text", pa.string()),
+        pa.field("question_raw", pa.string()),
+        pa.field("vec", pa.list_(pa.float32(), -1)),
+        pa.field("answers", pa.list_(_answer_struct)),
+        pa.field("freq", pa.int32()),
+        pa.field("created_at", pa.float64()),
+        pa.field("updated_at", pa.float64()),
+    ]
+)
 
 
 # ── 纯文本提取（从旧版消息链） ─────────────────────────────
+
 
 def extract_plain_from_chain(raw) -> str:
     """从旧版消息链 JSON 字符串提取纯文本。"""
@@ -123,6 +130,7 @@ def extract_plain_from_chain(raw) -> str:
 
 
 # ── 主流程 ─────────────────────────────────────────────────
+
 
 async def migrate(args):
     old_dir = Path(args.old_wordstock)
@@ -154,7 +162,7 @@ async def migrate(args):
             print("错误: 未指定 --local-model 时需要 --embedding-provider")
             sys.exit(1)
         # 这里需要用户通过环境变量或其他方式提供 API，简化处理
-        print(f"在线 embedding 需要在脚本中自行接入 API，当前仅支持 --local-model")
+        print("在线 embedding 需要在脚本中自行接入 API，当前仅支持 --local-model")
         print("示例: --local-model BAAI/bge-small-zh-v1.5")
         sys.exit(1)
 
@@ -225,15 +233,23 @@ async def migrate(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ChatLearning 旧版 SQLite → 新版 LanceDB 迁移")
-    parser.add_argument("--old-wordstock", required=True, help="旧版 WordStock 目录路径")
-    parser.add_argument("--new-lancedb", required=True, help="新版 LanceDB 数据目录路径")
+    parser = argparse.ArgumentParser(
+        description="ChatLearning 旧版 SQLite → 新版 LanceDB 迁移"
+    )
+    parser.add_argument(
+        "--old-wordstock", required=True, help="旧版 WordStock 目录路径"
+    )
+    parser.add_argument(
+        "--new-lancedb", required=True, help="新版 LanceDB 数据目录路径"
+    )
     parser.add_argument(
         "--local-model",
         default="BAAI/bge-small-zh-v1.5",
         help="本地 sentence-transformers 模型名（默认 BAAI/bge-small-zh-v1.5）",
     )
-    parser.add_argument("--hf-mirror", default="https://hf-mirror.com", help="HuggingFace 镜像")
+    parser.add_argument(
+        "--hf-mirror", default="https://hf-mirror.com", help="HuggingFace 镜像"
+    )
     parser.add_argument("--batch-size", type=int, default=50, help="批量写入大小")
     parser.add_argument(
         "--embedding-provider",

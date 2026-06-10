@@ -91,9 +91,7 @@ class WordStock:
             vec_col = records.column("vec")
             if vec_col[0].as_py():
                 self._vec_dim = len(vec_col[0].as_py())
-                logger.info(
-                    f"[WordStock] 检测到已有数据，向量维度: {self._vec_dim}"
-                )
+                logger.info(f"[WordStock] 检测到已有数据，向量维度: {self._vec_dim}")
 
     async def close(self):
         """关闭 LanceDB 连接，释放后台线程。"""
@@ -393,7 +391,7 @@ class WordStock:
                 num_sub_vectors=n_sub,
             )
             self._index_built = True
-            logger.info("[WordStock] IVF-PQ 索引构建完成")
+            logger.debug("[WordStock] IVF-PQ 索引构建完成")
         except Exception as e:
             logger.warning(f"[WordStock] 索引构建失败（非致命）: {e}")
 
@@ -404,12 +402,12 @@ class WordStock:
 
         row_count = await self.count()
         if row_count < 5000:
-            logger.info("[WordStock] 数据量 < 5000，跳过索引构建（暴力搜索已够快）")
+            logger.debug("[WordStock] 数据量 < 5000，跳过索引构建（暴力搜索已够快）")
             return
 
         nlist = min(int(np.sqrt(row_count)), 256)
         n_sub = min(self._vec_dim // 8, 96)
-        logger.info(f"[WordStock] 重建 IVF-PQ 索引: nlist={nlist} n_sub={n_sub}")
+        logger.debug(f"[WordStock] 重建 IVF-PQ 索引: nlist={nlist} n_sub={n_sub}")
         await self._table.create_index(
             metric="cosine",
             num_partitions=nlist,
@@ -417,7 +415,7 @@ class WordStock:
             replace=True,
         )
         self._index_built = True
-        logger.info("[WordStock] 索引重建完成")
+        logger.debug("[WordStock] 索引重建完成")
 
     async def cleanup_low_freq(self, days: float = 30, min_freq: int = 2) -> int:
         """清理低频旧词条：updated_at 距今超过 days 且 freq < min_freq。返回清理数。"""
@@ -431,7 +429,7 @@ class WordStock:
             # LanceDB delete 逐条执行
             for rid in to_delete:
                 await self._table.delete(f"id = {rid}")
-        logger.info(f"[WordStock] 清理低频词条: {len(to_delete)} 条")
+        logger.debug(f"[WordStock] 清理低频词条: {len(to_delete)} 条")
         return len(to_delete)
 
     async def get_stats(self, group_id: str | None = None) -> dict:
@@ -550,5 +548,5 @@ class WordStock:
                 )
             added += 1
 
-        logger.info(f"[WordStock] 导入完成: added={added} skipped={skipped}")
+        logger.debug(f"[WordStock] 导入完成: added={added} skipped={skipped}")
         return added, skipped
