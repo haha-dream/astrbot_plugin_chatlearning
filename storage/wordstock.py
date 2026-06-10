@@ -199,9 +199,14 @@ class WordStock:
             answers.sort(key=lambda a: a.get("added_at", 0))
             answers = answers[-max_ans:]
 
-        # LanceDB update
+        # LanceDB update — 转为纯 dict 列表（Arrow struct → Python dict）
+        plain_answers = [
+            {"answertext": str(a["answertext"]), "answer_raw": str(a["answer_raw"]),
+             "added_at": float(a["added_at"]), "same": int(a["same"])}
+            for a in answers
+        ]
         await self._table.update(
-            {"answers": answers, "freq": row["freq"] + 1, "updated_at": now},
+            {"answers": plain_answers, "freq": row["freq"] + 1, "updated_at": now},
             where=f"id = {record_id}",
         )
         logger.debug(f"[WordStock] 追加答案: id={record_id} merged={merged}")
