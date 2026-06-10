@@ -193,6 +193,12 @@ class ChatLearningPlugin(Star):
         if self._is_noise(plain_text):
             return
 
+        # 指令消息跳过学习/回复，留给 AstrBot LLM
+        cfg = self.context.get_config(umo=event.unified_msg_origin)
+        prefixes = cfg.get("wake_prefix", ["/"])
+        if any(plain_text.startswith(p) for p in prefixes if p):
+            return
+
         # 快速删除
         handled, qd_reply = await self._handle_quick_delete(event, group_id, plain_text)
         if handled:
