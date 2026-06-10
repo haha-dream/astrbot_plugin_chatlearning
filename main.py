@@ -272,9 +272,6 @@ class ChatLearningPlugin(Star):
     # ═══ 回复 ═════════════════════════════════════════════════
 
     async def _handle_reply(self, event, group_id, text):
-        if self._C("at_reply_only") and not self._is_at_me(event):
-            return
-
         vec = await self._get_embedding(text)
         if vec is None:
             return
@@ -300,6 +297,7 @@ class ChatLearningPlugin(Star):
             cross_search_fn=cross_fn,
         )
         if result is None:
+            event.stop_event()
             return
 
         self._reply_cd[group_id] = time.time()
@@ -346,14 +344,6 @@ class ChatLearningPlugin(Star):
         if mode == "blend":
             return f"用户说：{query}\n词库匹配的参考回复：{answer}\n请用你自己的风格改写这条回复，保持原意但让表达更自然。只输出改写后的文本。"
         return f"用户说：{query}\n参考上下文（来自群聊词库）：{answer}\n请用你自己的风格回复这条消息。只输出回复文本。"
-
-    def _is_at_me(self, event):
-        self_id = str(event.get_self_id())
-        for seg in event.get_messages():
-            if hasattr(seg, "type") and str(seg.type) == "At":
-                if str(getattr(seg, "qq", "")) == self_id:
-                    return True
-        return False
 
     # ═══ 快速删除 ═════════════════════════════════════════════
 

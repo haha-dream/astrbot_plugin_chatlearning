@@ -47,12 +47,6 @@
     "hint": "0.0~1.0。越高越严格（只回复高度相似的），越低越宽松（容易牛头不对马嘴）。建议 0.70~0.80",
     "default": 0.75
   },
-  "at_reply_only": {
-    "description": "仅被 @ 时回复",
-    "type": "bool",
-    "hint": "开启后只有被群成员 @ 时才触发回复",
-    "default": false
-  },
   "bot_names": {
     "description": "Bot 昵称",
     "type": "list",
