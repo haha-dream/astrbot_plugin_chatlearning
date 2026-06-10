@@ -908,7 +908,8 @@ class ChatLearningPlugin(Star):
         if not q:
             return jsonify([])
         results = []
-        raw = await self.wordstock._table.query().limit(200).to_arrow()
+        # 全表扫描 + Python 过滤（LanceDB 不支持 SQL LIKE）
+        raw = await self.wordstock._table.query().to_arrow()
         for row in raw.to_pylist():
             if q in row.get("question_text", ""):
                 results.append(
