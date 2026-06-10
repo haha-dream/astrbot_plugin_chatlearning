@@ -96,7 +96,10 @@ class WordStock:
     async def close(self):
         """关闭 LanceDB 连接，释放后台线程。"""
         if self._db is not None:
-            await self._db.close()
+            try:
+                await self._db.close()
+            except TypeError:
+                pass  # 部分版本 close() 是同步方法
         self._table = None
         self._db = None
 
