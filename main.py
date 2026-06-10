@@ -341,18 +341,36 @@ class ChatLearningPlugin(Star):
         yield event.plain_result(text_out)
 
     async def _persona_fusion(self, event, query, matched_answer, mode):
-        """用配置的融合 LLM 润色或生成回复。"""
+        """用配置的融合 LLM 润色或生成回复（带会话上下文）。"""
         pid = (self._C("persona_fusion_provider", "") or "").strip()
         if not pid:
             return None
         prov = self.context.get_provider_by_id(pid)
         if not prov:
             return None
+
         persona_prompt = await self._get_fusion_persona_prompt()
         prompt = self._build_fusion_prompt(query, matched_answer, mode)
+
+        # 获取会话历史
+        import json as _json
+
+        cm = self.context.conversation_manager
+        cid = await cm.get_curr_conversation_id(event.unified_msg_origin)
+        contexts = []
+        if cid:
+            conv = await cm.get_conversation(event.unified_msg_origin, cid)
+            if conv and conv.history:
+                try:
+                    contexts = _json.loads(conv.history)
+                except Exception:
+                    pass
+
         try:
             resp = await prov.text_chat(
-                prompt=prompt, system_prompt=persona_prompt or None
+                prompt=prompt,
+                system_prompt=persona_prompt or None,
+                contexts=contexts if contexts else None,
             )
             return (resp.completion_text or "").strip()
         except Exception as e:
