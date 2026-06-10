@@ -19,7 +19,6 @@ Schema:
   updated_at: float64    — 最后更新时间
 """
 
-import asyncio
 import os
 import time
 
@@ -201,8 +200,12 @@ class WordStock:
 
         # LanceDB update — 转为纯 dict 列表（Arrow struct → Python dict）
         plain_answers = [
-            {"answertext": str(a["answertext"]), "answer_raw": str(a["answer_raw"]),
-             "added_at": float(a["added_at"]), "same": int(a["same"])}
+            {
+                "answertext": str(a["answertext"]),
+                "answer_raw": str(a["answer_raw"]),
+                "added_at": float(a["added_at"]),
+                "same": int(a["same"]),
+            }
             for a in answers
         ]
         await self._table.update(
@@ -213,11 +216,6 @@ class WordStock:
         return True
 
     # ── 查询 ────────────────────────────────────────────────
-
-    @staticmethod
-    async def _run_async(fn, *args, **kwargs):
-        """在默认线程池中执行，防止 LanceDB 同步 I/O 阻塞事件循环。"""
-        return await asyncio.to_thread(fn, *args, **kwargs)
 
     async def search_similar(
         self,
@@ -247,7 +245,7 @@ class WordStock:
             )
 
         try:
-            results = await self._run_async(_query)
+            results = await _query()
         except Exception as e:
             logger.error(f"[WordStock] 搜索失败: {e}")
             return []
@@ -288,7 +286,7 @@ class WordStock:
                 .to_arrow()
             )
 
-        result = await self._run_async(_query)
+        result = await _query()
         if result.num_rows == 0:
             return None
         return result.to_pylist()[0]
@@ -356,7 +354,7 @@ class WordStock:
                     .to_arrow()
                 )
 
-            results = await self._run_async(_query)
+            results = await _query()
         except Exception as e:
             logger.error(f"[WordStock] 跨群搜索失败: {e}")
             return []
