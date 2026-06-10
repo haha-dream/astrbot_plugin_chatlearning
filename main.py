@@ -823,7 +823,7 @@ class ChatLearningPlugin(Star):
                 tmpl,
                 {
                     "stats": stats,
-                    "group_label": f"群 {gid}" if gid else "全局",
+                    "group_label": gid if gid else "全局",
                     "now": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
                 },
             )
