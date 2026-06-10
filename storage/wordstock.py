@@ -234,8 +234,8 @@ class WordStock:
             )
             return []
 
-        async def _query():
-            return (
+        try:
+            results = await (
                 self._table.query()
                 .nearest_to(query_vec)
                 .where(f"group_id = '{group_id}'")
@@ -243,9 +243,6 @@ class WordStock:
                 .limit(top_k)
                 .to_arrow()
             )
-
-        try:
-            results = await _query()
         except Exception as e:
             logger.error(f"[WordStock] 搜索失败: {e}")
             return []
@@ -279,14 +276,11 @@ class WordStock:
         """按 group_id + 精确文本 获取单条记录（用于判断问题是否已存在）。"""
         escaped = question_text.replace("'", "''")
 
-        async def _query():
-            return (
-                self._table.query()
-                .where(f"group_id = '{group_id}' AND question_text = '{escaped}'")
-                .to_arrow()
-            )
-
-        result = await _query()
+        result = await (
+            self._table.query()
+            .where(f"group_id = '{group_id}' AND question_text = '{escaped}'")
+            .to_arrow()
+        )
         if result.num_rows == 0:
             return None
         return result.to_pylist()[0]
@@ -345,16 +339,13 @@ class WordStock:
             # LanceDB 不支持 != 操作符直接做 nearest search，
             # 所以我们：1) 全局 nearest search 取足够多候选 → 2) Python 侧过滤
 
-            async def _query():
-                return (
-                    self._table.query()
-                    .nearest_to(query_vec)
-                    .distance_type("cosine")
-                    .limit(top_k * 5)
-                    .to_arrow()
-                )
-
-            results = await _query()
+            results = await (
+                self._table.query()
+                .nearest_to(query_vec)
+                .distance_type("cosine")
+                .limit(top_k * 5)
+                .to_arrow()
+            )
         except Exception as e:
             logger.error(f"[WordStock] 跨群搜索失败: {e}")
             return []
