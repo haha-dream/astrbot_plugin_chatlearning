@@ -206,10 +206,21 @@ class WordStock:
             answers.sort(key=lambda a: a.get("added_at", 0))
             answers = answers[-max_ans:]
 
-        await self._table.update(
-            {"answers": answers, "freq": row["freq"] + 1, "updated_at": now},
-            where=f"id = {record_id}",
-        )
+        await self._table.delete(f"id = {record_id}")
+        row = [
+            {
+                "id": record_id,
+                "group_id": str(row["group_id"]),
+                "question_text": str(row["question_text"]),
+                "question_raw": str(row["question_raw"]),
+                "vec": row["vec"],
+                "answers": answers,
+                "freq": int(row["freq"]) + 1,
+                "created_at": float(row["created_at"]),
+                "updated_at": now,
+            }
+        ]
+        await self._table.add(row)
         logger.debug(f"[WordStock] 追加答案: id={record_id} merged={merged}")
         return True
 
