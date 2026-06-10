@@ -190,12 +190,8 @@ class WordStock:
 
         # LanceDB update
         await self._table.update(
+            {"answers": answers, "freq": row["freq"] + 1, "updated_at": now},
             where=f"id = {record_id}",
-            values={
-                "answers": answers,
-                "freq": row["freq"] + 1,
-                "updated_at": now,
-            },
         )
         logger.debug(f"[WordStock] 追加答案: id={record_id} merged={merged}")
         return True
@@ -271,8 +267,8 @@ class WordStock:
         if rec is None:
             return False
         await self._table.update(
+            {"freq": rec["freq"] + 1, "updated_at": time.time()},
             where=f"id = {record_id}",
-            values={"freq": rec["freq"] + 1, "updated_at": time.time()},
         )
         return True
 
