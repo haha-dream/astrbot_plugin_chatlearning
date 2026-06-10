@@ -328,6 +328,7 @@ class ChatLearningPlugin(Star):
             f"[ChatLearning] 回复 #{self._reply_count}: "
             f"Q={text[:20]} → A={result.answer_text[:20]}"
         )
+        event.stop_event()
         yield event.plain_result(text_out)
 
     async def _get_fusion_persona_prompt(self):
