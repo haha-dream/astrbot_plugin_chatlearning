@@ -591,20 +591,50 @@ class ChatLearningPlugin(Star):
         if self._C("enable_local_embedding"):
             async with self._model_lock:
                 if self._local_model is None:
-                    await self._local_embed(cleaned[0])
-                    if self._local_model is None:
+                    try:
+                        from sentence_transformers import SentenceTransformer
+
+                        from astrbot.core.utils.astrbot_path import (
+                            get_astrbot_plugin_data_path,
+                        )
+
+                        model_name = self._C(
+                            "local_embedding_model", "BAAI/bge-small-zh-v1.5"
+                        )
+                        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+                        cache_dir = os.path.join(
+                            get_astrbot_plugin_data_path(), self.name, "hf_cache"
+                        )
+                        os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", cache_dir)
+                        logger.debug(f"[ChatLearning] 加载本地模型: {model_name}")
+                        try:
+                            self._local_model = await asyncio.to_thread(
+                                SentenceTransformer, model_name, local_files_only=True
+                            )
+                        except Exception:
+                            self._local_model = await asyncio.to_thread(
+                                SentenceTransformer, model_name
+                            )
+                        logger.debug("[ChatLearning] 本地模型加载完成")
+                    except ImportError:
+                        logger.error("[ChatLearning] sentence-transformers 未安装")
+                        self._embedding_ready = False
                         return result
-            vecs = await asyncio.to_thread(
-                self._local_model.encode,
-                cleaned,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
-            for idx, vec in zip(clean_indices, vecs.tolist()):
-                result[idx] = vec
-                self._embed_cache[texts[idx]] = vec
-                while len(self._embed_cache) > self._embed_cache_max:
-                    self._embed_cache.popitem(last=False)
+                    except Exception as e:
+                        logger.error(f"[ChatLearning] 本地模型加载失败: {e}")
+                        self._embedding_ready = False
+                        return result
+                vecs = await asyncio.to_thread(
+                    self._local_model.encode,
+                    cleaned,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )
+                for idx, vec in zip(clean_indices, vecs.tolist()):
+                    result[idx] = vec
+                    self._embed_cache[texts[idx]] = vec
+                    while len(self._embed_cache) > self._embed_cache_max:
+                        self._embed_cache.popitem(last=False)
         else:
             for idx in clean_indices:
                 result[idx] = await self._get_embedding(texts[idx])

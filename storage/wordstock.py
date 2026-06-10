@@ -163,6 +163,8 @@ class WordStock:
         answer_raw: str,
     ) -> bool:
         """向已有问题追加（或合并）答案。如答案已存在则增加 same 计数。"""
+        if self._table is None:
+            return False
         result = await self._table.query().where(f"id = {record_id}").to_arrow()
         if result.num_rows == 0:
             logger.warning(f"[WordStock] add_answer: id={record_id} 不存在")
@@ -276,6 +278,8 @@ class WordStock:
 
     async def get_by_id(self, record_id: int) -> dict | None:
         """按 ID 获取单条记录。"""
+        if self._table is None:
+            return None
         result = await self._table.query().where(f"id = {record_id}").to_arrow()
         if result.num_rows == 0:
             return None
@@ -283,6 +287,8 @@ class WordStock:
 
     async def get_by_text(self, group_id: str, question_text: str) -> dict | None:
         """按 group_id + 精确文本 获取单条记录（用于判断问题是否已存在）。"""
+        if self._table is None:
+            return None
         escaped = question_text.replace("'", "''")
 
         result = await (
