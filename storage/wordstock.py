@@ -19,7 +19,6 @@ Schema:
   updated_at: float64    — 最后更新时间
 """
 
-import asyncio
 import os
 import time
 
@@ -401,14 +400,15 @@ class WordStock:
         if self._table is None:
             return 0
         try:
-            from datetime import timedelta
-
-            stats = await asyncio.to_thread(
-                self._table.cleanup_old_versions,
-                older_than=timedelta(hours=retention_hours),
-                delete_unverified=True,
+            cleanup_ms = retention_hours * 3600 * 1000
+            stats = await self._table.optimize(
+                cleanup_since_ms=cleanup_ms, delete_unverified=True
             )
-            freed = getattr(stats, "bytes_removed", 0)
+            freed = (
+                getattr(stats.compaction, "bytes_removed", 0)
+                if hasattr(stats, "compaction")
+                else 0
+            )
             if freed > 0:
                 logger.info(
                     f"[WordStock] 清理历史版本，释放 {freed / 1024 / 1024:.1f} MB"
