@@ -19,6 +19,7 @@ Schema:
   updated_at: float64    — 最后更新时间
 """
 
+import asyncio
 import os
 import time
 
@@ -394,6 +395,28 @@ class WordStock:
             f"from {len(seen_group_ids)} groups, found={len(records)}"
         )
         return records
+
+    async def cleanup_versions(self) -> int:
+        """清理 LanceDB 历史版本，释放磁盘空间。返回释放的字节数。"""
+        if self._table is None:
+            return 0
+        try:
+            from datetime import timedelta
+
+            stats = await asyncio.to_thread(
+                self._table.cleanup_old_versions,
+                older_than=timedelta(hours=1),
+                delete_unverified=True,
+            )
+            freed = getattr(stats, "bytes_removed", 0)
+            if freed > 0:
+                logger.info(
+                    f"[WordStock] 清理历史版本，释放 {freed / 1024 / 1024:.1f} MB"
+                )
+            return freed
+        except Exception as e:
+            logger.warning(f"[WordStock] 清理版本失败: {e}")
+            return 0
 
     async def ensure_index(self):
         """确保索引存在：数据量达标且未构建索引时自动构建 IVF-PQ。"""

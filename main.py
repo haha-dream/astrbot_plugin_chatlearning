@@ -436,6 +436,11 @@ class ChatLearningPlugin(Star):
                         if cleaned:
                             logger.debug(f"[ChatLearning] 自动清理: {cleaned} 条")
                     await self.wordstock.build_index()
+                    freed = await self.wordstock.cleanup_versions()
+                    if freed:
+                        logger.info(
+                            f"[ChatLearning] LanceDB 清理: {freed / 1024 / 1024:.0f} MB"
+                        )
                     last_cleanup = now
             except asyncio.CancelledError:
                 raise
@@ -906,6 +911,12 @@ class ChatLearningPlugin(Star):
     async def cmd_wordstock_rebuild(self, event):
         await self.wordstock.build_index()
         yield event.plain_result("🔧 索引重建完成")
+
+    @_grp_wordstock.command("cleanup_versions")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def cmd_wordstock_cleanup_versions(self, event):
+        freed = await self.wordstock.cleanup_versions()
+        yield event.plain_result(f"🧹 已清理 {freed / 1024 / 1024:.0f} MB 历史版本")
 
     # ═══ 指令: /filter ═══════════════════════════════════════
 
