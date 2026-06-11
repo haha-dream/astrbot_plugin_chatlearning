@@ -400,9 +400,11 @@ class WordStock:
         if self._table is None:
             return 0
         try:
-            cleanup_ms = retention_hours * 3600 * 1000
+            from datetime import timedelta
+
             stats = await self._table.optimize(
-                cleanup_since_ms=cleanup_ms, delete_unverified=True
+                cleanup_older_than=timedelta(hours=retention_hours),
+                delete_unverified=True,
             )
             freed = (
                 getattr(stats.compaction, "bytes_removed", 0)
