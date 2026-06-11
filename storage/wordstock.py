@@ -406,11 +406,7 @@ class WordStock:
                 cleanup_older_than=timedelta(hours=retention_hours),
                 delete_unverified=True,
             )
-            freed = (
-                getattr(stats.compaction, "bytes_removed", 0)
-                if hasattr(stats, "compaction")
-                else 0
-            )
+            freed = getattr(stats.prune, "bytes_removed", 0)
             if freed > 0:
                 logger.info(
                     f"[WordStock] 清理历史版本，释放 {freed / 1024 / 1024:.1f} MB"
