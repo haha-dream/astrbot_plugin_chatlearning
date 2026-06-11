@@ -396,7 +396,7 @@ class WordStock:
         )
         return records
 
-    async def cleanup_versions(self) -> int:
+    async def cleanup_versions(self, retention_hours: int = 2) -> int:
         """清理 LanceDB 历史版本，释放磁盘空间。返回释放的字节数。"""
         if self._table is None:
             return 0
@@ -405,7 +405,7 @@ class WordStock:
 
             stats = await asyncio.to_thread(
                 self._table.cleanup_old_versions,
-                older_than=timedelta(hours=1),
+                older_than=timedelta(hours=retention_hours),
                 delete_unverified=True,
             )
             freed = getattr(stats, "bytes_removed", 0)

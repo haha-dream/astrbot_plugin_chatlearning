@@ -420,6 +420,7 @@ class ChatLearningPlugin(Star):
 
     async def _periodic_maintenance(self):
         last_cleanup = time.time()
+        last_version_cleanup = time.time()
         last_states = {"learn": None, "reply": None}
         while True:
             await asyncio.sleep(60)
@@ -427,7 +428,7 @@ class ChatLearningPlugin(Star):
                 now = time.time()
                 if self._C("auto_schedule_enable"):
                     await self._check_schedule(last_states)
-                if now - last_cleanup > 6 * 3600:
+                if now - last_cleanup > 24 * 3600:
                     days = int(self._C("auto_cleanup_days", 30))
                     if days > 0:
                         cleaned = await self.wordstock.cleanup_low_freq(
@@ -436,12 +437,21 @@ class ChatLearningPlugin(Star):
                         if cleaned:
                             logger.debug(f"[ChatLearning] 自动清理: {cleaned} 条")
                     await self.wordstock.build_index()
-                    freed = await self.wordstock.cleanup_versions()
+                    last_cleanup = now
+                version_interval = int(self._C("version_cleanup_interval_hours", 6))
+                if (
+                    version_interval > 0
+                    and now - last_version_cleanup > version_interval * 3600
+                ):
+                    retention = int(self._C("version_retention_hours", 2))
+                    freed = await self.wordstock.cleanup_versions(
+                        retention_hours=retention
+                    )
                     if freed:
                         logger.info(
-                            f"[ChatLearning] LanceDB 清理: {freed / 1024 / 1024:.0f} MB"
+                            f"[ChatLearning] LanceDB 版本清理: {freed / 1024 / 1024:.0f} MB"
                         )
-                    last_cleanup = now
+                    last_version_cleanup = now
             except asyncio.CancelledError:
                 raise
             except Exception as e:

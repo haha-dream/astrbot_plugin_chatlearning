@@ -97,10 +97,22 @@
     "default": false
   },
   "auto_cleanup_days": {
-    "description": "自动清理天数",
+    "description": "低频词条清理天数",
     "type": "int",
-    "hint": "超过此天数未更新且热度 < 2 的词条将被自动清理。0 表示不自动清理",
+    "hint": "超过此天数未更新且热度 < 2 的词条将被自动清理。0 表示不清理",
     "default": 30
+  },
+  "version_cleanup_interval_hours": {
+    "description": "版本清理间隔（小时）",
+    "type": "int",
+    "hint": "LanceDB 历史版本文件清理间隔。频繁写入会导致版本膨胀，建议 4~12",
+    "default": 6
+  },
+  "version_retention_hours": {
+    "description": "版本保留时长（小时）",
+    "type": "int",
+    "hint": "保留最近多少小时内的历史版本。值越小释放空间越多，建议 1~4",
+    "default": 2
   },
   "max_answers_per_question": {
     "description": "每个问题最大答案数",
