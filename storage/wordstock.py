@@ -435,10 +435,15 @@ class WordStock:
                 f"[WordStock] 自动构建 IVF-PQ 索引: "
                 f"rows={row_count} nlist={nlist} n_sub_vectors={n_sub}"
             )
+            from lancedb.index import IvfPq
+
             await self._table.create_index(
-                metric="cosine",
-                num_partitions=nlist,
-                num_sub_vectors=n_sub,
+                column="vec",
+                config=IvfPq(
+                    distance_type="cosine",
+                    num_partitions=nlist,
+                    num_sub_vectors=n_sub,
+                ),
             )
             self._index_built = True
             logger.debug("[WordStock] IVF-PQ 索引构建完成")
@@ -458,10 +463,15 @@ class WordStock:
         nlist = min(int(np.sqrt(row_count)), 256)
         n_sub = min(self._vec_dim // 8, 96)
         logger.debug(f"[WordStock] 重建 IVF-PQ 索引: nlist={nlist} n_sub={n_sub}")
+        from lancedb.index import IvfPq
+
         await self._table.create_index(
-            metric="cosine",
-            num_partitions=nlist,
-            num_sub_vectors=n_sub,
+            column="vec",
+            config=IvfPq(
+                distance_type="cosine",
+                num_partitions=nlist,
+                num_sub_vectors=n_sub,
+            ),
             replace=True,
         )
         self._index_built = True
