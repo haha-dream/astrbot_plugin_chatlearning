@@ -589,7 +589,7 @@ class ChatLearningPlugin(Star):
                     model_name = self._C(
                         "local_embedding_model", "BAAI/bge-small-zh-v1.5"
                     )
-                    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+                    os.environ.setdefault("HF_ENDPOINT", self._C("hf_endpoint", "https://huggingface.co"))
                     cache_dir = os.path.join(
                         get_astrbot_plugin_data_path(), self.name, "hf_cache"
                     )
@@ -647,7 +647,7 @@ class ChatLearningPlugin(Star):
                         model_name = self._C(
                             "local_embedding_model", "BAAI/bge-small-zh-v1.5"
                         )
-                        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+                        os.environ.setdefault("HF_ENDPOINT", self._C("hf_endpoint", "https://huggingface.co"))
                         cache_dir = os.path.join(
                             get_astrbot_plugin_data_path(), self.name, "hf_cache"
                         )

@@ -71,6 +71,12 @@
     "hint": "HuggingFace 模型名。默认 BAAI/bge-small-zh-v1.5（轻量），可选 BAAI/bge-m3（高质量，较大）",
     "default": "BAAI/bge-small-zh-v1.5"
   },
+  "hf_endpoint": {
+    "description": "HuggingFace 镜像",
+    "type": "string",
+    "hint": "下载本地模型时使用的 HuggingFace Endpoint。国内用户可设为 https://hf-mirror.com 加速",
+    "default": "https://huggingface.co"
+  },
   "llm_semantic_check": {
     "description": "LLM 语义二次判断",
     "type": "bool",
