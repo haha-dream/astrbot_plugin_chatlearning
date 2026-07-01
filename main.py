@@ -26,7 +26,7 @@ LANCE_DB_DIR = "lancedb"
     "astrbot_plugin_chatlearning",
     "satori",
     "群聊对话学习与智能回复——基于向量嵌入的语义对话引擎",
-    "v0.2.0",
+    "v0.3.0",
 )
 class ChatLearningPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
