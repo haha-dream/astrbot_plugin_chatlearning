@@ -23,6 +23,9 @@ Thumbs.db
 # LanceDB data (generated at runtime)
 plugin_data/
 
+# Runtime data
+data/
+
 # Export / backup files
 *.export.json
 

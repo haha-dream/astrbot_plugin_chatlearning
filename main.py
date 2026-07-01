@@ -226,8 +226,10 @@ class ChatLearningPlugin(Star):
             return
 
         # 先查 DB（快），确定哪些需要 embedding，再批量生成
-        ans_exist = await self.wordstock.get_by_text(qa.group_id, qa.answer_text)
-        q_exist = await self.wordstock.get_by_text(qa.group_id, qa.question_text)
+        ans_exist, q_exist = await asyncio.gather(
+            self.wordstock.get_by_text(qa.group_id, qa.answer_text),
+            self.wordstock.get_by_text(qa.group_id, qa.question_text),
+        )
 
         need_embed = []
         if not ans_exist:

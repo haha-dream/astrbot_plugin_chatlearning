@@ -21,6 +21,7 @@ Schema:
 
 import os
 import time
+from collections import OrderedDict
 
 import lancedb
 import numpy as np
@@ -50,6 +51,8 @@ class WordStock:
         self._db: lancedb.DBConnection | None = None
         self._table: lancedb.table.Table | None = None
         self._vec_dim: int | None = None
+        self._text_cache: OrderedDict[str, dict] = OrderedDict()
+        self._text_cache_max: int = 5000
 
     # ── 生命周期 ────────────────────────────────────────────
 
@@ -151,6 +154,10 @@ class WordStock:
         ]
 
         await self._table.add(row)
+        # 写入缓存
+        self._cache_put(
+            self._text_cache_key(group_id, question_text), row[0]
+        )
         logger.debug(
             f"[WordStock] 新增问题: group={group_id} text={question_text[:50]}..."
         )
@@ -208,21 +215,29 @@ class WordStock:
             answers.sort(key=lambda a: a.get("added_at", 0))
             answers = answers[-max_ans:]
 
-        await self._table.delete(f"id = {record_id}")
-        row = [
-            {
-                "id": record_id,
-                "group_id": str(row["group_id"]),
-                "question_text": str(row["question_text"]),
-                "question_raw": str(row["question_raw"]),
-                "vec": row["vec"],
-                "answers": answers,
-                "freq": int(row["freq"]) + 1,
-                "created_at": float(row["created_at"]),
-                "updated_at": now,
-            }
-        ]
-        await self._table.add(row)
+        # 使用 merge_insert 原子 upsert 替代 delete + insert
+        row_dict = {
+            "id": record_id,
+            "group_id": str(row["group_id"]),
+            "question_text": str(row["question_text"]),
+            "question_raw": str(row["question_raw"]),
+            "vec": row["vec"],
+            "answers": answers,
+            "freq": int(row["freq"]) + 1,
+            "created_at": float(row["created_at"]),
+            "updated_at": now,
+        }
+        source = pa.RecordBatch.from_pylist([row_dict], schema=await self._table.schema())
+        await (
+            self._table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(source)
+        )
+        # 缓存失效：answers 和 freq 已变更
+        self._cache_invalidate(
+            row_dict["group_id"], row_dict["question_text"]
+        )
         logger.debug(f"[WordStock] 追加答案: id={record_id} merged={merged}")
         return True
 
@@ -287,6 +302,11 @@ class WordStock:
 
     async def get_by_text(self, group_id: str, question_text: str) -> dict | None:
         """按 group_id + 精确文本 获取单条记录（用于判断问题是否已存在）。"""
+        cache_key = self._text_cache_key(group_id, question_text)
+        if cache_key in self._text_cache:
+            self._text_cache.move_to_end(cache_key)
+            return self._text_cache[cache_key]
+
         if self._table is None:
             return None
         escaped = question_text.replace("'", "''")
@@ -298,7 +318,24 @@ class WordStock:
         )
         if result.num_rows == 0:
             return None
-        return result.to_pylist()[0]
+        record = result.to_pylist()[0]
+        self._cache_put(cache_key, record)
+        return record
+
+    # ── 缓存 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _text_cache_key(group_id: str, text: str) -> str:
+        return f"{group_id}\x00{text}"
+
+    def _cache_put(self, key: str, record: dict) -> None:
+        self._text_cache[key] = record
+        self._text_cache.move_to_end(key)
+        while len(self._text_cache) > self._text_cache_max:
+            self._text_cache.popitem(last=False)
+
+    def _cache_invalidate(self, group_id: str, text: str) -> None:
+        self._text_cache.pop(self._text_cache_key(group_id, text), None)
 
     # ── 管理 ────────────────────────────────────────────────
 
@@ -315,6 +352,10 @@ class WordStock:
 
     async def delete(self, record_id: int) -> bool:
         """按 ID 删除单条记录。"""
+        # 删除前查一下记录，以便清缓存
+        rec = await self.get_by_id(record_id)
+        if rec:
+            self._cache_invalidate(rec["group_id"], rec["question_text"])
         await self._table.delete(f"id = {record_id}")
         return True
 
@@ -481,14 +522,13 @@ class WordStock:
         """清理低频旧词条：updated_at 距今超过 days 且 freq < min_freq。返回清理数。"""
         cutoff = time.time() - days * 86400
         result = await self._table.query().to_arrow()
-        to_delete = []
+        to_delete: list[tuple[int, str, str]] = []  # (id, group_id, question_text)
         for row in result.to_pylist():
             if row["freq"] < min_freq and row["updated_at"] < cutoff:
-                to_delete.append(row["id"])
-        if to_delete:
-            # LanceDB delete 逐条执行
-            for rid in to_delete:
-                await self._table.delete(f"id = {rid}")
+                to_delete.append((row["id"], row["group_id"], row["question_text"]))
+        for rid, gid, qtext in to_delete:
+            self._cache_invalidate(gid, qtext)
+            await self._table.delete(f"id = {rid}")
         logger.debug(f"[WordStock] 清理低频词条: {len(to_delete)} 条")
         return len(to_delete)
 
