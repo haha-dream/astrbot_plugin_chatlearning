@@ -303,7 +303,6 @@ class ChatLearningPlugin(Star):
             cross_search_fn=cross_fn,
         )
         if result is None:
-            event.stop_event()
             return
 
         self._reply_cd[group_id] = time.time()
@@ -339,7 +338,6 @@ class ChatLearningPlugin(Star):
             f"[ChatLearning] 回复 #{self._reply_count}: "
             f"Q={text[:20]} → A={result.answer_text[:20]}"
         )
-        event.stop_event()
         yield event.plain_result(text_out)
 
     async def _persona_fusion(self, event, query, matched_answer, mode):
@@ -354,25 +352,10 @@ class ChatLearningPlugin(Star):
         persona_prompt = await self._get_fusion_persona_prompt()
         prompt = self._build_fusion_prompt(query, matched_answer, mode)
 
-        # 获取会话历史
-        import json as _json
-
-        cm = self.context.conversation_manager
-        cid = await cm.get_curr_conversation_id(event.unified_msg_origin)
-        contexts = []
-        if cid:
-            conv = await cm.get_conversation(event.unified_msg_origin, cid)
-            if conv and conv.history:
-                try:
-                    contexts = _json.loads(conv.history)
-                except Exception:
-                    pass
-
         try:
             resp = await prov.text_chat(
                 prompt=prompt,
                 system_prompt=persona_prompt or None,
-                contexts=contexts if contexts else None,
             )
             return (resp.completion_text or "").strip()
         except Exception as e:
@@ -635,7 +618,7 @@ class ChatLearningPlugin(Star):
                     return None
         try:
             vec = await asyncio.to_thread(
-                self._local_model.encode, text, normalize_embeddings=True
+                self._local_model.encode, text, normalize_embeddings=True, show_progress_bar=False
             )
             return vec.tolist()
         except Exception as e:
@@ -864,31 +847,6 @@ class ChatLearningPlugin(Star):
             yield event.plain_result(f"🗑 已删除词条 #{entry_id}")
         except ValueError:
             yield event.plain_result("❌ 无效的 ID")
-
-    @_grp_wordstock.command("panel")
-    async def cmd_wordstock_panel(self, event):
-        import datetime
-
-        gid = str(event.get_group_id())
-        stats = await self.wordstock.get_stats(gid if gid else None)
-        tmpl_path = os.path.join(os.path.dirname(__file__), "templates", "stats.html")
-        try:
-            with open(tmpl_path, encoding="utf-8") as f:
-                tmpl = f.read()
-            url = await self.html_render(
-                tmpl,
-                {
-                    "stats": stats,
-                    "group_label": gid if gid else "全局",
-                    "now": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                },
-            )
-            yield event.image_result(url)
-        except Exception as e:
-            logger.error(f"[ChatLearning] T2I 失败: {e}")
-            yield event.plain_result(
-                f"📊 词条: {stats['total']} | 答案: {stats['total_answers']} | 热度: {stats['avg_freq']}"
-            )
 
     @_grp_wordstock.command("export")
     @filter.permission_type(filter.PermissionType.ADMIN)

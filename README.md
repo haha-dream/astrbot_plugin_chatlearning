@@ -94,7 +94,6 @@ git clone https://github.com/user/astrbot_plugin_chatlearning
 | 指令                         | 说明                       |
 | ---------------------------- | -------------------------- |
 | `/wordstock stats`           | 查看本群词库统计           |
-| `/wordstock panel`           | T2I 统计面板（渲染为图片） |
 | `/wordstock search <关键词>` | 搜索词库（精确+近似）      |
 | `/wordstock delete <id>`     | 删除词条（管理员）         |
 | `/wordstock export`          | 导出词库为 JSON（管理员）  |
@@ -152,7 +151,7 @@ git clone https://github.com/user/astrbot_plugin_chatlearning
 
 ```
 astrbot_plugin_chatlearning/
-├── main.py              # Star 插件入口 + 事件 + 26 指令
+├── main.py              # Star 插件入口 + 事件 + 25 指令
 ├── learning/
 │   └── collector.py     # 时间窗口 Q&A 链采集
 ├── storage/
