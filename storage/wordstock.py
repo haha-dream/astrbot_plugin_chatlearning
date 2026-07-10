@@ -155,9 +155,7 @@ class WordStock:
 
         await self._table.add(row)
         # 写入缓存
-        self._cache_put(
-            self._text_cache_key(group_id, question_text), row[0]
-        )
+        self._cache_put(self._text_cache_key(group_id, question_text), row[0])
         logger.debug(
             f"[WordStock] 新增问题: group={group_id} text={question_text[:50]}..."
         )
@@ -227,7 +225,9 @@ class WordStock:
             "created_at": float(row["created_at"]),
             "updated_at": now,
         }
-        source = pa.RecordBatch.from_pylist([row_dict], schema=await self._table.schema())
+        source = pa.RecordBatch.from_pylist(
+            [row_dict], schema=await self._table.schema()
+        )
         await (
             self._table.merge_insert("id")
             .when_matched_update_all()
@@ -235,9 +235,7 @@ class WordStock:
             .execute(source)
         )
         # 缓存失效：answers 和 freq 已变更
-        self._cache_invalidate(
-            row_dict["group_id"], row_dict["question_text"]
-        )
+        self._cache_invalidate(row_dict["group_id"], row_dict["question_text"])
         logger.debug(f"[WordStock] 追加答案: id={record_id} merged={merged}")
         return True
 
@@ -368,59 +366,6 @@ class WordStock:
         else:
             result = await self._table.query().to_arrow()
         return result.num_rows
-
-    async def get_all_group_ids(self) -> list[str]:
-        """获取所有不重复的 group_id。"""
-        result = await self._table.query().to_arrow()
-        if result.num_rows == 0:
-            return []
-        group_ids: set[str] = set()
-        for gid in result.column("group_id").to_pylist():
-            if gid:
-                group_ids.add(gid)
-        return sorted(group_ids)
-
-    async def search_text(
-        self,
-        query: str,
-        group_id: str | None = None,
-        offset: int = 0,
-        limit: int = 20,
-    ) -> tuple[list[dict], int]:
-        """文本模糊搜索（全表扫描 + Python 过滤），支持分页。
-
-        Returns:
-            (results, total_count) — results 为当前页记录列表，total_count 为匹配总数。
-        """
-        if self._table is None:
-            return [], 0
-
-        # 先用 LanceDB where 缩小范围（如有 group_id 过滤）
-        if group_id:
-            raw = await (
-                self._table.query()
-                .where(f"group_id = '{group_id}'")
-                .to_arrow()
-            )
-        else:
-            raw = await self._table.query().to_arrow()
-
-        # Python 侧文本过滤
-        matched: list[dict] = []
-        for row in raw.to_pylist():
-            if query in row.get("question_text", ""):
-                matched.append(
-                    {
-                        "id": row["id"],
-                        "question_text": row["question_text"],
-                        "freq": row["freq"],
-                        "answer_count": len(row.get("answers", [])),
-                    }
-                )
-
-        total = len(matched)
-        page = matched[offset : offset + limit]
-        return page, total
 
     async def search_cross_group(
         self,
@@ -573,49 +518,6 @@ class WordStock:
             await self._table.delete(f"id = {rid}")
         logger.debug(f"[WordStock] 清理低频词条: {len(to_delete)} 条")
         return len(to_delete)
-
-    async def get_stats(self, group_id: str | None = None) -> dict:
-        """获取词库统计信息。"""
-        if group_id:
-            result = (
-                await self._table.query().where(f"group_id = '{group_id}'").to_arrow()
-            )
-        else:
-            result = await self._table.query().to_arrow()
-
-        rows = result.to_pylist()
-        if not rows:
-            return {"total": 0, "total_answers": 0, "top_questions": [], "groups": []}
-
-        total_answers = sum(len(r.get("answers", [])) for r in rows)
-        total_freq = sum(r.get("freq", 0) for r in rows)
-        avg_score = total_freq / len(rows) if rows else 0
-
-        # Top 10 热门问题
-        sorted_rows = sorted(rows, key=lambda r: r.get("freq", 0), reverse=True)
-        top = [
-            {
-                "text": r["question_text"][:50],
-                "freq": r["freq"],
-                "answers": len(r.get("answers", [])),
-            }
-            for r in sorted_rows[:10]
-        ]
-
-        # 群分布
-        group_counts: dict[str, int] = {}
-        for r in rows:
-            gid = r.get("group_id", "?")
-            group_counts[gid] = group_counts.get(gid, 0) + 1
-        groups = [{"id": k, "count": v} for k, v in group_counts.items()]
-
-        return {
-            "total": len(rows),
-            "total_answers": total_answers,
-            "avg_freq": round(avg_score, 1),
-            "top_questions": top,
-            "groups": groups,
-        }
 
     async def export_data(self, group_id: str | None = None) -> list[dict]:
         """导出词库数据（不含向量，导入时需重新生成 embedding）。"""

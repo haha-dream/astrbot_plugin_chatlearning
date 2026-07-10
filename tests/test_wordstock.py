@@ -346,22 +346,6 @@ class TestAdmin:
         assert after["freq"] == before["freq"] + 1
 
     @pytest.mark.asyncio
-    async def test_get_stats(self, ws_with_data):
-        ws, _, _ = ws_with_data
-        stats = await ws.get_stats("g1")
-        assert stats["total"] == 1
-        assert stats["total_answers"] == 1
-        assert len(stats["groups"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_get_all_group_ids(self, ws):
-        await ws.add_question("g1", "a", "a", [0.1] * 384)
-        await ws.add_question("g2", "b", "b", [0.2] * 384)
-        gids = await ws.get_all_group_ids()
-        assert "g1" in gids
-        assert "g2" in gids
-
-    @pytest.mark.asyncio
     async def test_export_data(self, ws_with_data):
         ws, _, _ = ws_with_data
         data = await ws.export_data("g1")

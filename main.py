@@ -143,24 +143,6 @@ class ChatLearningPlugin(Star):
 
         logger.info("[ChatLearning] ✅ 初始化完成")
 
-        # Pages API
-        PN = "astrbot_plugin_chatlearning"
-        self.context.register_web_api(
-            f"/{PN}/stats", self._api_stats, ["GET"], "词库统计"
-        )
-        self.context.register_web_api(
-            f"/{PN}/groups", self._api_groups, ["GET"], "词库群列表"
-        )
-        self.context.register_web_api(
-            f"/{PN}/search", self._api_search, ["GET"], "搜索词库"
-        )
-        self.context.register_web_api(
-            f"/{PN}/entry", self._api_entry_detail, ["GET"], "词条详情"
-        )
-        self.context.register_web_api(
-            f"/{PN}/delete", self._api_delete_entry, ["POST"], "删除词条"
-        )
-
         self._cleanup_task = asyncio.create_task(self._periodic_maintenance())
 
     async def terminate(self):
@@ -592,7 +574,9 @@ class ChatLearningPlugin(Star):
                     model_name = self._C(
                         "local_embedding_model", "BAAI/bge-small-zh-v1.5"
                     )
-                    os.environ["HF_ENDPOINT"] = self._C("hf_endpoint", "https://huggingface.co")
+                    os.environ["HF_ENDPOINT"] = self._C(
+                        "hf_endpoint", "https://huggingface.co"
+                    )
                     cache_dir = os.path.join(
                         get_astrbot_plugin_data_path(), self.name, "hf_cache"
                     )
@@ -621,7 +605,10 @@ class ChatLearningPlugin(Star):
                     return None
         try:
             vec = await asyncio.to_thread(
-                self._local_model.encode, text, normalize_embeddings=True, show_progress_bar=False
+                self._local_model.encode,
+                text,
+                normalize_embeddings=True,
+                show_progress_bar=False,
             )
             return vec.tolist()
         except Exception as e:
@@ -650,7 +637,9 @@ class ChatLearningPlugin(Star):
                         model_name = self._C(
                             "local_embedding_model", "BAAI/bge-small-zh-v1.5"
                         )
-                        os.environ["HF_ENDPOINT"] = self._C("hf_endpoint", "https://huggingface.co")
+                        os.environ["HF_ENDPOINT"] = self._C(
+                            "hf_endpoint", "https://huggingface.co"
+                        )
                         cache_dir = os.path.join(
                             get_astrbot_plugin_data_path(), self.name, "hf_cache"
                         )
@@ -952,78 +941,3 @@ class ChatLearningPlugin(Star):
         yield event.plain_result(
             "🚫 黑名单:\n" + "\n".join(users) if users else "🚫 黑名单: 无"
         )
-
-    # ═══ Pages API ═══════════════════════════════════════════
-
-    async def _api_stats(self):
-        from quart import jsonify, request
-
-        gid = request.args.get("group_id", "")
-        return jsonify(await self.wordstock.get_stats(gid if gid else None))
-
-    async def _api_groups(self):
-        from quart import jsonify
-
-        groups = await self.wordstock.get_all_group_ids()
-        return jsonify(groups)
-
-    async def _api_search(self):
-        from quart import jsonify, request
-
-        q = (request.args.get("q", "") or "").strip()
-        if not q:
-            return jsonify({"items": [], "total": 0, "page": 1, "page_size": 20})
-
-        group_id = request.args.get("group_id", "") or None
-        page = max(1, int(request.args.get("page", "1") or "1"))
-        page_size = min(100, max(1, int(request.args.get("page_size", "20") or "20")))
-        offset = (page - 1) * page_size
-
-        items, total = await self.wordstock.search_text(
-            q, group_id=group_id, offset=offset, limit=page_size
-        )
-        return jsonify(
-            {
-                "items": items,
-                "total": total,
-                "page": page,
-                "page_size": page_size,
-            }
-        )
-
-    async def _api_entry_detail(self):
-        from quart import jsonify, request
-
-        eid = request.args.get("id", "")
-        if not eid:
-            return jsonify({"error": "missing id"}), 400
-        rec = await self.wordstock.get_by_id(int(eid))
-        if not rec:
-            return jsonify({"error": "not found"}), 404
-        ans = [
-            {
-                "answertext": a.get("answertext", ""),
-                "same": a.get("same", 1),
-                "added_at": a.get("added_at", 0),
-            }
-            for a in rec.get("answers", [])
-        ]
-        return jsonify(
-            {
-                "id": rec["id"],
-                "question_text": rec["question_text"],
-                "freq": rec["freq"],
-                "created_at": rec["created_at"],
-                "answers": ans,
-            }
-        )
-
-    async def _api_delete_entry(self):
-        from quart import jsonify, request
-
-        data = await request.get_json()
-        eid = (data or {}).get("id")
-        if not eid:
-            return jsonify({"error": "missing id"}), 400
-        await self.wordstock.delete(int(eid))
-        return jsonify({"ok": True})
