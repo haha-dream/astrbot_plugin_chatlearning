@@ -26,7 +26,7 @@ LANCE_DB_DIR = "lancedb"
     "astrbot_plugin_chatlearning",
     "satori",
     "群聊对话学习与智能回复——基于向量嵌入的语义对话引擎",
-    "v0.3.0",
+    "v0.4.0",
 )
 class ChatLearningPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -190,7 +190,7 @@ class ChatLearningPlugin(Star):
 
         user_id = str(event.get_sender_id())
         timestamp = event.message_obj.timestamp if event.message_obj else time.time()
-        plain_text = event.message_str.strip()
+        plain_text = self.filter_engine.clean_at_mentions(event.message_str.strip())
         if not plain_text:
             return
         if self._is_noise(plain_text):
