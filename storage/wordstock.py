@@ -380,6 +380,48 @@ class WordStock:
                 group_ids.add(gid)
         return sorted(group_ids)
 
+    async def search_text(
+        self,
+        query: str,
+        group_id: str | None = None,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[dict], int]:
+        """文本模糊搜索（全表扫描 + Python 过滤），支持分页。
+
+        Returns:
+            (results, total_count) — results 为当前页记录列表，total_count 为匹配总数。
+        """
+        if self._table is None:
+            return [], 0
+
+        # 先用 LanceDB where 缩小范围（如有 group_id 过滤）
+        if group_id:
+            raw = await (
+                self._table.query()
+                .where(f"group_id = '{group_id}'")
+                .to_arrow()
+            )
+        else:
+            raw = await self._table.query().to_arrow()
+
+        # Python 侧文本过滤
+        matched: list[dict] = []
+        for row in raw.to_pylist():
+            if query in row.get("question_text", ""):
+                matched.append(
+                    {
+                        "id": row["id"],
+                        "question_text": row["question_text"],
+                        "freq": row["freq"],
+                        "answer_count": len(row.get("answers", [])),
+                    }
+                )
+
+        total = len(matched)
+        page = matched[offset : offset + limit]
+        return page, total
+
     async def search_cross_group(
         self,
         exclude_group_id: str,

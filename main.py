@@ -149,6 +149,9 @@ class ChatLearningPlugin(Star):
             f"/{PN}/stats", self._api_stats, ["GET"], "词库统计"
         )
         self.context.register_web_api(
+            f"/{PN}/groups", self._api_groups, ["GET"], "词库群列表"
+        )
+        self.context.register_web_api(
             f"/{PN}/search", self._api_search, ["GET"], "搜索词库"
         )
         self.context.register_web_api(
@@ -958,28 +961,35 @@ class ChatLearningPlugin(Star):
         gid = request.args.get("group_id", "")
         return jsonify(await self.wordstock.get_stats(gid if gid else None))
 
+    async def _api_groups(self):
+        from quart import jsonify
+
+        groups = await self.wordstock.get_all_group_ids()
+        return jsonify(groups)
+
     async def _api_search(self):
         from quart import jsonify, request
 
         q = (request.args.get("q", "") or "").strip()
         if not q:
-            return jsonify([])
-        results = []
-        # 全表扫描 + Python 过滤（LanceDB 不支持 SQL LIKE）
-        raw = await self.wordstock._table.query().to_arrow()
-        for row in raw.to_pylist():
-            if q in row.get("question_text", ""):
-                results.append(
-                    {
-                        "id": row["id"],
-                        "question_text": row["question_text"],
-                        "freq": row["freq"],
-                        "answer_count": len(row.get("answers", [])),
-                    }
-                )
-                if len(results) >= 30:
-                    break
-        return jsonify(results)
+            return jsonify({"items": [], "total": 0, "page": 1, "page_size": 20})
+
+        group_id = request.args.get("group_id", "") or None
+        page = max(1, int(request.args.get("page", "1") or "1"))
+        page_size = min(100, max(1, int(request.args.get("page_size", "20") or "20")))
+        offset = (page - 1) * page_size
+
+        items, total = await self.wordstock.search_text(
+            q, group_id=group_id, offset=offset, limit=page_size
+        )
+        return jsonify(
+            {
+                "items": items,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            }
+        )
 
     async def _api_entry_detail(self):
         from quart import jsonify, request

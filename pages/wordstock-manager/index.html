@@ -95,9 +95,39 @@
         text-transform: uppercase;
         letter-spacing: 0.5px;
       }
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+      .group-select {
+        flex-shrink: 0;
+        width: 180px;
+        padding: 11px 14px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text);
+        font-size: 14px;
+        box-shadow: var(--shadow);
+        outline: none;
+        cursor: pointer;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 12px center;
+        padding-right: 32px;
+      }
+      [data-theme="dark"] .group-select {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      }
+      .group-select:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-light);
+      }
       .search-wrap {
         position: relative;
-        margin-bottom: 20px;
+        flex: 1;
       }
       .search-wrap svg {
         position: absolute;
@@ -106,6 +136,7 @@
         transform: translateY(-50%);
         color: var(--text-secondary);
         pointer-events: none;
+        z-index: 1;
       }
       .search-wrap input {
         width: 100%;
@@ -282,6 +313,46 @@
         gap: 8px;
         margin-top: 16px;
       }
+      .pagination {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin-top: 16px;
+        padding: 8px 0;
+      }
+      .pagination .page-info {
+        font-size: 13px;
+        color: var(--text-secondary);
+        font-weight: 500;
+      }
+      .pagination .btn-page {
+        padding: 6px 16px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        transition: all 0.12s;
+        box-shadow: var(--shadow);
+      }
+      .pagination .btn-page:hover:not(:disabled) {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: var(--accent-light);
+      }
+      .pagination .btn-page:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      .result-info {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-bottom: 10px;
+        text-align: right;
+      }
       .toast {
         position: fixed;
         bottom: 20px;
@@ -322,9 +393,14 @@
       <div class="stat-card"><div class="num">—</div><div class="label">平均热度</div></div>
     </div>
 
-    <div class="search-wrap">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-      <input type="text" id="searchBox" placeholder="搜索词库…" autofocus />
+    <div class="toolbar">
+      <select class="group-select" id="groupSelect">
+        <option value="">全部词库</option>
+      </select>
+      <div class="search-wrap">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input type="text" id="searchBox" placeholder="搜索词库…" autofocus />
+      </div>
     </div>
 
     <div id="results">
@@ -341,6 +417,15 @@
       const bridge = window.AstrBotPluginPage;
       const $ = (s) => document.querySelector(s);
 
+      // ── 状态 ──────────────────────────────────────────────
+      const PAGE_SIZE = 20;
+      let state = {
+        page: 1,
+        total: 0,
+        query: "",
+        groupId: "",
+      };
+
       function toast(msg) {
         const t = $("#toast");
         t.textContent = msg;
@@ -355,6 +440,33 @@
         return `<span class="badge badge-cool">${f}</span>`;
       }
 
+      // ── 群/词库列表 ──────────────────────────────────────
+      async function loadGroups() {
+        try {
+          const groups = await bridge.apiGet("groups");
+          const sel = $("#groupSelect");
+          // 保留"全部"
+          sel.innerHTML = '<option value="">全部词库</option>';
+          (groups || []).forEach((gid) => {
+            const opt = document.createElement("option");
+            opt.value = gid;
+            opt.textContent = gid;
+            sel.appendChild(opt);
+          });
+          // 恢复选中
+          if (state.groupId) sel.value = state.groupId;
+        } catch (e) {
+          /* ignore */
+        }
+      }
+
+      $("#groupSelect").addEventListener("change", () => {
+        state.groupId = $("#groupSelect").value;
+        state.page = 1;
+        if (state.query) doSearch();
+      });
+
+      // ── 统计 ──────────────────────────────────────────────
       async function loadStats() {
         try {
           const d = await bridge.apiGet("stats");
@@ -367,41 +479,74 @@
         }
       }
 
+      // ── 搜索 ──────────────────────────────────────────────
       let timer;
       $("#searchBox").addEventListener("input", () => {
         clearTimeout(timer);
-        timer = setTimeout(doSearch, 300);
+        timer = setTimeout(() => {
+          state.query = $("#searchBox").value.trim();
+          state.page = 1;
+          doSearch();
+        }, 300);
       });
 
       async function doSearch() {
-        const q = $("#searchBox").value.trim();
+        const q = state.query;
         if (!q) {
           return ($("#results").innerHTML =
             '<div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><p style="font-size:14px">输入关键词搜索词库</p></div>');
         }
         try {
-          const items = await bridge.apiGet("search", { q });
-          if (!items.length) {
-            return ($("#results").innerHTML =
-              '<div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 13h6"/></svg><p style="font-size:14px">未找到匹配</p></div>');
-          }
-          let h =
-            "<table><thead><tr><th>ID</th><th>问题</th><th>热度</th><th>答案</th><th></th></tr></thead><tbody>";
-          items.forEach((it) => {
-            h += `<tr>
-              <td style="color:var(--text-secondary);font-size:11px;font-family:monospace">#${it.id}</td>
-              <td><a href="#" onclick="showDetail(${it.id});return false">${esc(it.question_text.substring(0, 45))}${it.question_text.length > 45 ? "…" : ""}</a></td>
-              <td>${freqBadge(it.freq)}</td>
-              <td style="color:var(--text-secondary)">${it.answer_count}</td>
-              <td><button class="btn btn-danger" onclick="doDelete(${it.id})">删除</button></td></tr>`;
-          });
-          h += "</tbody></table>";
-          $("#results").innerHTML = h;
+          const params = { q, page: state.page, page_size: PAGE_SIZE };
+          if (state.groupId) params.group_id = state.groupId;
+          const d = await bridge.apiGet("search", params);
+          state.total = d.total || 0;
+          renderResults(d);
         } catch (e) {
           toast("搜索失败");
         }
       }
 
+      function renderResults(d) {
+        const items = d.items || [];
+        if (!items.length) {
+          return ($("#results").innerHTML =
+            '<div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 13h6"/></svg><p style="font-size:14px">未找到匹配</p></div>');
+        }
+
+        const totalPages = Math.max(1, Math.ceil(state.total / PAGE_SIZE));
+        let h = `<div class="result-info">共 ${state.total} 条 · 第 ${state.page}/${totalPages} 页</div>`;
+
+        h +=
+          "<table><thead><tr><th>ID</th><th>问题</th><th>热度</th><th>答案</th><th></th></tr></thead><tbody>";
+        items.forEach((it) => {
+          h += `<tr>
+            <td style="color:var(--text-secondary);font-size:11px;font-family:monospace">#${it.id}</td>
+            <td><a href="#" onclick="showDetail(${it.id});return false">${esc(it.question_text.substring(0, 45))}${it.question_text.length > 45 ? "…" : ""}</a></td>
+            <td>${freqBadge(it.freq)}</td>
+            <td style="color:var(--text-secondary)">${it.answer_count}</td>
+            <td><button class="btn btn-danger" onclick="doDelete(${it.id})">删除</button></td></tr>`;
+        });
+        h += "</tbody></table>";
+
+        // 分页控件
+        h += '<div class="pagination">';
+        h += `<button class="btn-page" onclick="goPage(${state.page - 1})"${state.page <= 1 ? " disabled" : ""}>← 上一页</button>`;
+        h += `<span class="page-info">第 ${state.page} / ${totalPages} 页</span>`;
+        h += `<button class="btn-page" onclick="goPage(${state.page + 1})"${state.page >= totalPages ? " disabled" : ""}>下一页 →</button>`;
+        h += "</div>";
+
+        $("#results").innerHTML = h;
+      }
+
+      function goPage(p) {
+        const totalPages = Math.max(1, Math.ceil(state.total / PAGE_SIZE));
+        if (p < 1 || p > totalPages) return;
+        state.page = p;
+        doSearch();
+      }
+
+      // ── 详情 ──────────────────────────────────────────────
       async function showDetail(id) {
         try {
           const it = await bridge.apiGet("entry", { id });
@@ -435,6 +580,7 @@
         }
       }
 
+      // ── 删除 ──────────────────────────────────────────────
       async function doDelete(id) {
         if (!confirm("确定删除词条 #" + id + "？此操作不可恢复。")) return;
         try {
@@ -457,7 +603,11 @@
         return d.innerHTML;
       }
 
-      bridge.ready().then(loadStats);
+      // ── 启动 ──────────────────────────────────────────────
+      bridge.ready().then(() => {
+        loadStats();
+        loadGroups();
+      });
     </script>
   </body>
 </html>
