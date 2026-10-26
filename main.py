@@ -27,7 +27,7 @@ LANCE_DB_DIR = "lancedb"
     "astrbot_plugin_chatlearning",
     "satori",
     "群聊对话学习与智能回复——基于向量嵌入的语义对话引擎",
-    "v0.4.1",
+    "v0.4.2",
 )
 class ChatLearningPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -173,6 +173,24 @@ class ChatLearningPlugin(Star):
         group_id = str(group_id)
 
         if str(event.get_sender_id()) == str(event.get_self_id()):
+            return
+
+        # QQ 官方机器人账号发送的消息不参与学习/回复
+        platform_name = event.get_platform_name()
+        if platform_name.startswith("qq_official") and self.filter_engine.is_bot_author(
+            getattr(event.message_obj, "raw_message", None)
+        ):
+            logger.debug("[ChatLearning] 跳过 QQ 官方机器人消息")
+            return
+
+        # 官方机器人的 Markdown 消息带有固定标记，个人号协议也能据此识别
+        if self.filter_engine.is_official_bot_message(event.message_str):
+            logger.debug("[ChatLearning] 跳过 QQ 官方机器人 Markdown 消息")
+            return
+
+        # 含 @用户 的消息不参与学习/回复
+        if self.filter_engine.has_at_mention(event.get_messages(), event.message_str):
+            logger.debug("[ChatLearning] 跳过包含 @ 用户的消息")
             return
 
         user_id = str(event.get_sender_id())

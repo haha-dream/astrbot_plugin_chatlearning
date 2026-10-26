@@ -107,6 +107,11 @@ git clone https://github.com/user/astrbot_plugin_chatlearning
 | `/filter sensitive add/remove/list <词>`   | 敏感词管理 |
 | `/filter blocked add/remove/list <用户ID>` | 黑名单管理 |
 
+以下消息会被自动跳过，既不学习也不回复：
+
+- QQ 官方机器人发送的消息：平台标记 `author.bot = true`，或正文命中官方 Markdown 特征（`mqqapi://`、`q.qlogo.cn/qqapp/`、`qqbot.ugcimg.cn`、`[]({...version...})`）
+- 包含 @用户 或 @全体成员 的消息
+
 ### 其他
 
 | 操作               | 说明             |

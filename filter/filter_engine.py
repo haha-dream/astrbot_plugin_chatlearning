@@ -6,12 +6,23 @@
 
 import re
 
+from astrbot.api.message_components import At
+
 
 class FilterEngine:
     """三级过滤器：敏感词（不记录） / 黑名单用户（不记录） / 回复屏蔽词（不回复）"""
 
     _RE_AT_QQ = re.compile(r"@(\S+?)\(\d+\)")
     _RE_CQ_AT = re.compile(r"\[CQ:at,\s*qq=\d+\]")
+    _OFFICIAL_BOT_MARKERS = (
+        "mqqapi://",
+        "q.qlogo.cn/qqapp/",
+        "qqbot.ugcimg.cn",
+    )
+    _RE_OFFICIAL_BOT_LINK = re.compile(
+        r"\[\]\([^)]*(?:%7b[^)]*version|\{[^)]*version)[^)]*\)",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -31,6 +42,61 @@ class FilterEngine:
         text = cls._RE_AT_QQ.sub(r"@\1", text)
         text = cls._RE_CQ_AT.sub("", text)
         return text
+
+    # ── 消息级过滤 ──
+
+    @classmethod
+    def has_at_mention(cls, components: list | None, text: str = "") -> bool:
+        """判断消息是否 @ 了用户（含 @全体成员）。
+
+        Args:
+            components: AstrBot 消息链组件列表。
+            text: 消息纯文本，用于没有 At 组件的平台或历史消息兜底。
+
+        Returns:
+            消息包含 @ 用户时为 True。
+        """
+        if any(isinstance(comp, At) for comp in components or []):
+            return True
+        return bool(cls._RE_AT_QQ.search(text) or cls._RE_CQ_AT.search(text))
+
+    @staticmethod
+    def is_bot_author(raw_message: object) -> bool:
+        """判断消息发送者是否为平台标记的机器人账号。
+
+        QQ 官方机器人 API 会在 author.bot 中标记机器人账号；QQ 个人号适配器
+        没有该字段，因此调用方只应对 QQ 官方平台使用此判断。
+
+        Args:
+            raw_message: 平台原始消息对象或事件字典。
+
+        Returns:
+            发送者被标记为机器人时为 True。
+        """
+        author = getattr(raw_message, "author", None)
+        if author is None and isinstance(raw_message, dict):
+            author = raw_message.get("author")
+        if isinstance(author, dict):
+            return bool(author.get("bot"))
+        return bool(getattr(author, "bot", False))
+
+    @classmethod
+    def is_official_bot_message(cls, text: str) -> bool:
+        """判断消息内容是否为 QQ 官方机器人发送的富文本消息。
+
+        QQ 个人号协议无法从消息段判断发送者是否为官方机器人，但官方机器人
+        的 Markdown 消息会带有固定的内联命令、应用头像或版本标记。
+
+        Args:
+            text: 消息纯文本。
+
+        Returns:
+            命中官方机器人消息特征时为 True。
+        """
+        lowered = text.lower()
+        if any(marker in lowered for marker in cls._OFFICIAL_BOT_MARKERS):
+            return True
+        return bool(cls._RE_OFFICIAL_BOT_LINK.search(text))
 
     # ── 学习侧过滤 ──
 
