@@ -1,9 +1,11 @@
 """
 WordStock 单元测试 — 覆盖缓存、merge_insert、答案合并逻辑。
-使用 LanceDB memory:// 模式，无需磁盘 IO。
+使用临时目录中的真实 LanceDB，覆盖并发与版本清理行为。
 """
 
+import os
 import tempfile
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,11 +16,12 @@ from storage.wordstock import WordStock
 # Fixtures
 # ═══════════════════════════════════════════════════════════════
 
+
 @pytest_asyncio.fixture
 async def ws():
     """创建临时目录 LanceDB 的 WordStock 实例并初始化。"""
     with tempfile.TemporaryDirectory() as tmpdir:
-        stock = WordStock(tmpdir)
+        stock = WordStock(os.path.join(tmpdir, "lancedb"))
         await stock.initialize()
         yield stock
         await stock.close()
@@ -29,8 +32,12 @@ async def ws_with_data(ws):
     """预置一条问题 + 答案的 WordStock。"""
     vec = [0.1] * 384  # bge-small-zh-v1.5 维数
     rid = await ws.add_question(
-        "g1", "你好", "你好_raw", vec,
-        answer_text="你好呀", answer_raw="你好呀_raw",
+        "g1",
+        "你好",
+        "你好_raw",
+        vec,
+        answer_text="你好呀",
+        answer_raw="你好呀_raw",
     )
     assert rid > 0
     return ws, rid, vec
@@ -39,6 +46,7 @@ async def ws_with_data(ws):
 # ═══════════════════════════════════════════════════════════════
 # 缓存单元测试（纯逻辑，无需 DB）
 # ═══════════════════════════════════════════════════════════════
+
 
 class TestCachePure:
     """测试 _text_cache_key / _cache_put / _cache_invalidate 纯逻辑。"""
@@ -94,8 +102,8 @@ class TestCachePure:
 # 缓存 + DB 集成测试
 # ═══════════════════════════════════════════════════════════════
 
-class TestCacheWithDB:
 
+class TestCacheWithDB:
     @pytest.mark.asyncio
     async def test_get_by_text_cache_hit(self, ws_with_data):
         ws, _, _ = ws_with_data
@@ -118,9 +126,7 @@ class TestCacheWithDB:
 
     @pytest.mark.asyncio
     async def test_add_question_populates_cache(self, ws):
-        rid = await ws.add_question(
-            "g1", "测试", "测试_raw", [0.1] * 384
-        )
+        rid = await ws.add_question("g1", "测试", "测试_raw", [0.1] * 384)
         # 缓存命中
         key = WordStock._text_cache_key("g1", "测试")
         assert key in ws._text_cache
@@ -156,8 +162,8 @@ class TestCacheWithDB:
 # add_answer 答案合并逻辑
 # ═══════════════════════════════════════════════════════════════
 
-class TestAddAnswerMerge:
 
+class TestAddAnswerMerge:
     @pytest.mark.asyncio
     async def test_new_answer_appended(self, ws_with_data):
         ws, rid, _ = ws_with_data
@@ -217,8 +223,8 @@ class TestAddAnswerMerge:
 # merge_insert 行为验证（mock）
 # ═══════════════════════════════════════════════════════════════
 
-class TestMergeInsert:
 
+class TestMergeInsert:
     @pytest.mark.asyncio
     async def test_merge_insert_called_not_delete_add(self, ws_with_data):
         """验证 add_answer 调用的是 merge_insert 而非 delete + add。"""
@@ -235,7 +241,9 @@ class TestMergeInsert:
         orig_delete = AsyncMock()
 
         with (
-            patch.object(ws._table, "merge_insert", return_value=mock_builder) as mi_spy,
+            patch.object(
+                ws._table, "merge_insert", return_value=mock_builder
+            ) as mi_spy,
             patch.object(ws._table, "add", orig_add),
             patch.object(ws._table, "delete", orig_delete),
         ):
@@ -258,8 +266,8 @@ class TestMergeInsert:
 # 向量搜索与精确查询
 # ═══════════════════════════════════════════════════════════════
 
-class TestSearch:
 
+class TestSearch:
     @pytest.mark.asyncio
     async def test_search_similar_empty_db(self, ws):
         results = await ws.search_similar("g1", [0.1] * 384)
@@ -308,8 +316,8 @@ class TestSearch:
 # 跨群搜索
 # ═══════════════════════════════════════════════════════════════
 
-class TestCrossGroupSearch:
 
+class TestCrossGroupSearch:
     @pytest.mark.asyncio
     async def test_excludes_current_group(self, ws):
         # 写入两个群的数据
@@ -328,8 +336,8 @@ class TestCrossGroupSearch:
 # 统计与管理
 # ═══════════════════════════════════════════════════════════════
 
-class TestAdmin:
 
+class TestAdmin:
     @pytest.mark.asyncio
     async def test_count(self, ws_with_data):
         ws, _, _ = ws_with_data
@@ -368,3 +376,148 @@ class TestAdmin:
         assert cleaned >= 1
         assert await ws.get_by_text("g1", "rare") is None
         assert await ws.get_by_text("g1", "freq") is not None
+
+
+# ═══════════════════════════════════════════════════════════════
+# 容错、锁与版本清理
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestResilience:
+    @pytest.mark.asyncio
+    async def test_get_by_text_retries_after_refresh(self, ws_with_data):
+        ws, _, _ = ws_with_data
+        ws._text_cache.clear()
+        orig_query = ws._table.query
+        calls = []
+
+        def flaky_query():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("stale snapshot")
+            return orig_query()
+
+        with (
+            patch.object(ws._table, "query", side_effect=flaky_query),
+            patch.object(ws._table, "checkout_latest", AsyncMock()) as checkout,
+        ):
+            rec = await ws.get_by_text("g1", "你好")
+
+        assert rec is not None
+        assert rec["question_text"] == "你好"
+        checkout.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_search_similar_retries_after_refresh(self, ws_with_data):
+        ws, _, vec = ws_with_data
+        orig_query = ws._table.query
+        calls = []
+
+        def flaky_query():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("stale snapshot")
+            return orig_query()
+
+        with (
+            patch.object(ws._table, "query", side_effect=flaky_query),
+            patch.object(ws._table, "checkout_latest", AsyncMock()) as checkout,
+        ):
+            results = await ws.search_similar("g1", vec, threshold=0.0)
+
+        assert len(results) >= 1
+        checkout.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_initialize_survives_dimension_probe_failure(self, tmp_path):
+        fake_table = MagicMock()
+        fake_table.checkout_latest = AsyncMock()
+        fake_table.query.return_value.limit.return_value.to_arrow = AsyncMock(
+            side_effect=RuntimeError("bad snapshot")
+        )
+        fake_db = MagicMock()
+        fake_db.list_tables = AsyncMock(return_value=MagicMock(tables=["qa_pairs"]))
+        fake_db.open_table = AsyncMock(return_value=fake_table)
+        fake_db.close = AsyncMock()
+
+        with patch(
+            "storage.wordstock.lancedb.connect_async",
+            AsyncMock(return_value=fake_db),
+        ):
+            stock = WordStock(str(tmp_path / "lancedb"))
+            await stock.initialize()
+            try:
+                assert stock._table is fake_table
+                assert stock._vec_dim is None
+            finally:
+                await stock.close()
+
+    @pytest.mark.asyncio
+    async def test_add_question_holds_lock(self, ws_with_data):
+        ws, _, _ = ws_with_data
+        observed = []
+
+        async def fake_add(_rows):
+            observed.append(ws._lock.locked())
+
+        with patch.object(ws._table, "add", side_effect=fake_add):
+            await ws.add_question("g1", "lock", "lock_raw", [0.1] * 384)
+
+        assert observed == [True]
+
+    @pytest.mark.asyncio
+    async def test_writer_lock_blocks_second_instance(self, tmp_path):
+        db_path = str(tmp_path / "lancedb")
+        first = WordStock(db_path)
+        await first.initialize()
+        second = WordStock(db_path)
+        try:
+            with pytest.raises(RuntimeError, match="正被其他进程使用"):
+                await second.initialize()
+        finally:
+            await first.close()
+
+        # 第一个实例释放后，第二个实例应能正常打开
+        await second.initialize()
+        await second.close()
+
+
+class TestCleanupVersions:
+    @pytest.mark.asyncio
+    async def test_safe_options_and_retention_floor(self, ws_with_data):
+        ws, _, _ = ws_with_data
+        stats = MagicMock()
+        stats.prune.bytes_removed = 123456
+        optimize = AsyncMock(return_value=stats)
+
+        with patch.object(ws._table, "optimize", optimize):
+            freed = await ws.cleanup_versions(retention_hours=0)
+
+        assert freed == 123456
+        kwargs = optimize.await_args.kwargs
+        assert kwargs["cleanup_older_than"] == timedelta(hours=1)
+        assert kwargs["delete_unverified"] is False
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_none(self, ws_with_data):
+        ws, _, _ = ws_with_data
+        with patch.object(
+            ws._table, "optimize", AsyncMock(side_effect=RuntimeError("boom"))
+        ):
+            assert await ws.cleanup_versions() is None
+
+    @pytest.mark.asyncio
+    async def test_no_table_returns_zero(self, tmp_path):
+        stock = WordStock(str(tmp_path / "lancedb"))
+        await stock.initialize()
+        try:
+            assert await stock.cleanup_versions() == 0
+        finally:
+            await stock.close()
+
+    @pytest.mark.asyncio
+    async def test_real_optimize_succeeds(self, ws_with_data):
+        ws, _, _ = ws_with_data
+        freed = await ws.cleanup_versions(retention_hours=1)
+        assert isinstance(freed, int)
+        assert freed >= 0

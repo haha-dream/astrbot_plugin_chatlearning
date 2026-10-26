@@ -5,6 +5,7 @@ astrbot_plugin_chatlearning — 主插件
 """
 
 import asyncio
+import json
 import os
 import random
 import time
@@ -45,6 +46,8 @@ class ChatLearningPlugin(Star):
         self._embed_cache_max = 3000
         self._recent_replies: dict[str, list[tuple]] = {}
         self._cleanup_task: asyncio.Task | None = None
+        self._data_root: str | None = None
+        self._maintenance_state_path: str | None = None
 
     # ═══ 配置快捷读取 ═══════════════════════════════════════
 
@@ -73,6 +76,8 @@ class ChatLearningPlugin(Star):
 
         data_root = os.path.join(get_astrbot_plugin_data_path(), self.name)
         os.makedirs(data_root, exist_ok=True)
+        self._data_root = data_root
+        self._maintenance_state_path = os.path.join(data_root, "maintenance_state.json")
 
         self.wordstock = WordStock(os.path.join(data_root, LANCE_DB_DIR))
         await self.wordstock.initialize()
@@ -189,9 +194,12 @@ class ChatLearningPlugin(Star):
                 yield qd_reply
             return
 
-        # 学习
+        # 学习失败不应影响后续回复
         if self._C("learning") and self._is_group_learning(group_id):
-            await self._handle_learning(group_id, user_id, plain_text, timestamp)
+            try:
+                await self._handle_learning(group_id, user_id, plain_text, timestamp)
+            except Exception as e:
+                logger.warning(f"[ChatLearning] 学习失败: {e}")
 
         # 回复
         if self._C("reply") and self._is_group_reply(group_id):
@@ -211,10 +219,14 @@ class ChatLearningPlugin(Star):
             return
 
         # 先查 DB（快），确定哪些需要 embedding，再批量生成
-        ans_exist, q_exist = await asyncio.gather(
-            self.wordstock.get_by_text(qa.group_id, qa.answer_text),
-            self.wordstock.get_by_text(qa.group_id, qa.question_text),
-        )
+        try:
+            ans_exist, q_exist = await asyncio.gather(
+                self.wordstock.get_by_text(qa.group_id, qa.answer_text),
+                self.wordstock.get_by_text(qa.group_id, qa.question_text),
+            )
+        except Exception as e:
+            logger.warning(f"[ChatLearning] 查询词库失败: {e}")
+            return
 
         need_embed = []
         if not ans_exist:
@@ -388,9 +400,42 @@ class ChatLearningPlugin(Star):
 
     # ═══ 后台维护 ═════════════════════════════════════════════
 
+    def _save_maintenance_state(
+        self, last_cleanup: float, last_version_cleanup: float
+    ) -> None:
+        """原子写入维护时间戳，避免重启后重复或永久跳过清理。"""
+        if not self._maintenance_state_path:
+            return
+        tmp_path = self._maintenance_state_path + ".tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "last_cleanup": last_cleanup,
+                        "last_version_cleanup": last_version_cleanup,
+                    },
+                    f,
+                )
+            os.replace(tmp_path, self._maintenance_state_path)
+        except Exception as e:
+            logger.warning(f"[ChatLearning] 保存维护状态失败: {e}")
+
     async def _periodic_maintenance(self):
-        last_cleanup = time.time()
-        last_version_cleanup = time.time()
+        now = time.time()
+        last_cleanup = now
+        last_version_cleanup = 0.0
+        if self._maintenance_state_path:
+            try:
+                with open(self._maintenance_state_path, encoding="utf-8") as f:
+                    state = json.load(f)
+                last_cleanup = float(state.get("last_cleanup", now))
+                last_version_cleanup = float(state.get("last_version_cleanup", 0.0))
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                logger.warning(f"[ChatLearning] 读取维护状态失败: {e}")
+
+        version_retry_at = 0.0
         last_states = {"learn": None, "reply": None}
         while True:
             await asyncio.sleep(60)
@@ -408,20 +453,28 @@ class ChatLearningPlugin(Star):
                             logger.debug(f"[ChatLearning] 自动清理: {cleaned} 条")
                     await self.wordstock.build_index()
                     last_cleanup = now
+                    self._save_maintenance_state(last_cleanup, last_version_cleanup)
                 version_interval = int(self._C("version_cleanup_interval_hours", 6))
                 if (
                     version_interval > 0
                     and now - last_version_cleanup > version_interval * 3600
+                    and now >= version_retry_at
                 ):
                     retention = int(self._C("version_retention_hours", 2))
                     freed = await self.wordstock.cleanup_versions(
                         retention_hours=retention
                     )
-                    if freed:
-                        logger.info(
-                            f"[ChatLearning] LanceDB 版本清理: {freed / 1024 / 1024:.0f} MB"
-                        )
-                    last_version_cleanup = now
+                    if freed is not None:
+                        if freed:
+                            logger.info(
+                                f"[ChatLearning] LanceDB 版本清理: {freed / 1024 / 1024:.0f} MB"
+                            )
+                        last_version_cleanup = now
+                        version_retry_at = 0.0
+                        self._save_maintenance_state(last_cleanup, last_version_cleanup)
+                    else:
+                        # Back off briefly instead of retrying a broken table every minute.
+                        version_retry_at = now + 300
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -878,6 +931,9 @@ class ChatLearningPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_wordstock_cleanup_versions(self, event):
         freed = await self.wordstock.cleanup_versions()
+        if freed is None:
+            yield event.plain_result("❌ 版本清理失败，详见日志")
+            return
         yield event.plain_result(f"🧹 已清理 {freed / 1024 / 1024:.0f} MB 历史版本")
 
     # ═══ 指令: /filter ═══════════════════════════════════════

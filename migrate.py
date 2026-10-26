@@ -12,6 +12,7 @@
 import argparse
 import ast
 import asyncio
+import inspect
 import json
 import os
 import sqlite3
@@ -21,6 +22,8 @@ from pathlib import Path
 
 import lancedb
 import pyarrow as pa
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 # ── 旧版 SQLite schema ─────────────────────────────────────
 
@@ -169,70 +172,90 @@ async def migrate(args):
         print("示例: --local-model BAAI/bge-small-zh-v1.5")
         sys.exit(1)
 
-    # 打开/创建 LanceDB
-    db = await lancedb.connect_async(str(new_dir))
-    existing = await db.table_names()
-    table_name = "qa_pairs"
-    if table_name in existing:
-        table = await db.open_table(table_name)
-        print(f"已打开现有 LanceDB 表: {new_dir}")
-    else:
-        table = await db.create_table(table_name, schema=_new_schema, mode="create")
-        print(f"已创建 LanceDB 表: {new_dir}")
-
-    # 扫描旧数据库文件
-    db_files = sorted(old_dir.glob("*.db"))
-    if not db_files:
-        print(f"未在 {old_dir} 找到 .db 文件")
+    # 与 AstrBot 共用写者锁，防止迁移时机器人同时写表
+    lock_path = new_dir.resolve().parent / ".lance_writer.lock"
+    writer_lock = FileLock(str(lock_path))
+    try:
+        writer_lock.acquire(timeout=0)
+    except FileLockTimeout:
+        print("错误: 词库正被 AstrBot 使用，请先停止机器人再执行迁移")
         return
 
-    total_questions = 0
-    total_answers = 0
-    total_skipped = 0
+    db = None
+    try:
+        # 打开/创建 LanceDB
+        db = await lancedb.connect_async(str(new_dir))
+        existing = (await db.list_tables()).tables
+        table_name = "qa_pairs"
+        if table_name in existing:
+            table = await db.open_table(table_name)
+            print(f"已打开现有 LanceDB 表: {new_dir}")
+        else:
+            table = await db.create_table(table_name, schema=_new_schema, mode="create")
+            print(f"已创建 LanceDB 表: {new_dir}")
 
-    for db_file in db_files:
-        group_id = db_file.stem
-        print(f"\n处理群 {group_id} ({db_file}) ...")
+        # 扫描旧数据库文件
+        db_files = sorted(old_dir.glob("*.db"))
+        if not db_files:
+            print(f"未在 {old_dir} 找到 .db 文件")
+            return
 
-        batch = []
-        batch_size = 50
+        total_questions = 0
+        total_answers = 0
+        total_skipped = 0
 
-        for old_id, qtext, qraw, freq, answers in iter_old_wordstock(str(db_file)):
-            vec = await embed(qtext)
-            if not vec:
-                total_skipped += 1
-                continue
+        for db_file in db_files:
+            group_id = db_file.stem
+            print(f"\n处理群 {group_id} ({db_file}) ...")
 
-            row = {
-                "id": int(time.time() * 1_000_000) + total_questions,
-                "group_id": group_id,
-                "question_text": qtext,
-                "question_raw": qraw,
-                "vec": vec,
-                "answers": answers,
-                "freq": freq,
-                "created_at": time.time(),
-                "updated_at": time.time(),
-            }
-            batch.append(row)
-            total_questions += 1
-            total_answers += len(answers)
+            batch = []
+            batch_size = 50
 
-            if len(batch) >= batch_size:
+            for old_id, qtext, qraw, freq, answers in iter_old_wordstock(str(db_file)):
+                vec = await embed(qtext)
+                if not vec:
+                    total_skipped += 1
+                    continue
+
+                row = {
+                    "id": int(time.time() * 1_000_000) + total_questions,
+                    "group_id": group_id,
+                    "question_text": qtext,
+                    "question_raw": qraw,
+                    "vec": vec,
+                    "answers": answers,
+                    "freq": freq,
+                    "created_at": time.time(),
+                    "updated_at": time.time(),
+                }
+                batch.append(row)
+                total_questions += 1
+                total_answers += len(answers)
+
+                if len(batch) >= batch_size:
+                    await table.add(batch)
+                    print(f"  已写入 {total_questions} 条...", end="\r")
+                    batch.clear()
+
+            if batch:
                 await table.add(batch)
-                print(f"  已写入 {total_questions} 条...", end="\r")
-                batch.clear()
 
-        if batch:
-            await table.add(batch)
+            print(f"  群 {group_id}: 迁移完成")
 
-        print(f"  群 {group_id}: 迁移完成")
-
-    print(f"\n✅ 迁移完成: {total_questions} 个问题, {total_answers} 个答案")
-    if total_skipped:
-        print(f"⚠ 跳过 {total_skipped} 条（embedding 失败）")
-
-    await db.close()
+        print(f"\n✅ 迁移完成: {total_questions} 个问题, {total_answers} 个答案")
+        if total_skipped:
+            print(f"⚠ 跳过 {total_skipped} 条（embedding 失败）")
+    finally:
+        try:
+            if db is not None:
+                result = db.close()
+                if inspect.isawaitable(result):
+                    await result
+        except Exception as e:
+            print(f"警告: 关闭 LanceDB 失败: {e}")
+        finally:
+            if writer_lock.is_locked:
+                writer_lock.release()
 
 
 def main():
