@@ -4,7 +4,18 @@ from types import SimpleNamespace
 
 from filter.filter_engine import FilterEngine
 
-from astrbot.api.message_components import At, AtAll, Plain
+from astrbot.api.message_components import (
+    At,
+    AtAll,
+    Face,
+    File,
+    Image,
+    Plain,
+    Poke,
+    Record,
+    Reply,
+    Video,
+)
 
 
 class TestCleanAtMentions:
@@ -116,6 +127,42 @@ class TestHasAtMention:
 
     def test_empty_message(self):
         assert not FilterEngine.has_at_mention([], "")
+
+
+class TestHasUnsupportedComponent:
+    """测试视频、语音等非纯文本消息过滤。"""
+
+    def test_plain_text_allowed(self):
+        assert not FilterEngine.has_unsupported_component([Plain(text="你好")])
+
+    def test_qq_face_allowed(self):
+        components = [Plain(text="笑死"), Face(id=178)]
+        assert not FilterEngine.has_unsupported_component(components)
+
+    def test_image_allowed(self):
+        components = [Image(file="cat.jpg"), Plain(text="看这个")]
+        assert not FilterEngine.has_unsupported_component(components)
+
+    def test_reply_allowed(self):
+        components = [Reply(id="123"), Plain(text="同意")]
+        assert not FilterEngine.has_unsupported_component(components)
+
+    def test_record_filtered(self):
+        assert FilterEngine.has_unsupported_component([Record(file="voice.amr")])
+
+    def test_video_with_caption_filtered(self):
+        components = [Video(file="clip.mp4"), Plain(text="看这个视频")]
+        assert FilterEngine.has_unsupported_component(components)
+
+    def test_file_filtered(self):
+        assert FilterEngine.has_unsupported_component([File(name="a.txt")])
+
+    def test_poke_filtered(self):
+        assert FilterEngine.has_unsupported_component([Poke(id="123")])
+
+    def test_empty_or_none_allowed(self):
+        assert not FilterEngine.has_unsupported_component([])
+        assert not FilterEngine.has_unsupported_component(None)
 
 
 class TestIsBotAuthor:

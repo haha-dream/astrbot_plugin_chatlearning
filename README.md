@@ -111,6 +111,7 @@ git clone https://github.com/user/astrbot_plugin_chatlearning
 
 - QQ 官方机器人发送的消息：平台标记 `author.bot = true`，或正文命中官方 Markdown 特征（`mqqapi://`、`q.qlogo.cn/qqapp/`、`qqbot.ugcimg.cn`、`[]({...version...})`）
 - 包含 @用户 或 @全体成员 的消息
+- 视频、语音、文件、转发、JSON 卡片等非纯文本消息（纯文本、QQ 表情、图片/图片表情和引用回复仍会保留）
 
 ### 其他
 

@@ -26,7 +26,8 @@ Group Message
     │
     ▼
 FilterEngine.has_at_mention() / is_bot_author() / is_official_bot_message()
-                                   ← drop @user & QQ official bot messages
+FilterEngine.has_unsupported_component()
+                                   ← drop @user, QQ official bot & media messages
     │
     ▼
 FilterEngine.clean_at_mentions()   ← strip @user(QQ) → @user

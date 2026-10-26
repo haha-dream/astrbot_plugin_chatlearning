@@ -6,12 +6,13 @@
 
 import re
 
-from astrbot.api.message_components import At
+from astrbot.api.message_components import At, Face, Image, Plain, Reply
 
 
 class FilterEngine:
     """三级过滤器：敏感词（不记录） / 黑名单用户（不记录） / 回复屏蔽词（不回复）"""
 
+    _ALLOWED_MESSAGE_COMPONENTS = (Plain, Face, Image, Reply)
     _RE_AT_QQ = re.compile(r"@(\S+?)\(\d+\)")
     _RE_CQ_AT = re.compile(r"\[CQ:at,\s*qq=\d+\]")
     _OFFICIAL_BOT_MARKERS = (
@@ -97,6 +98,25 @@ class FilterEngine:
         if any(marker in lowered for marker in cls._OFFICIAL_BOT_MARKERS):
             return True
         return bool(cls._RE_OFFICIAL_BOT_LINK.search(text))
+
+    @classmethod
+    def has_unsupported_component(cls, components: list | None) -> bool:
+        """判断消息是否包含文本、表情或图片以外的组件。
+
+        语音、视频、文件、转发、JSON 卡片等消息即使带有文字说明，也不应
+        参与学习或回复；纯文本、QQ 表情（Face）、图片/图片表情（Image）和
+        引用回复（Reply，正文仍由 Plain 提供）可以通过。
+
+        Args:
+            components: AstrBot 消息链组件列表。
+
+        Returns:
+            存在不允许的组件时为 True。
+        """
+        return any(
+            not isinstance(comp, cls._ALLOWED_MESSAGE_COMPONENTS)
+            for comp in components or []
+        )
 
     # ── 学习侧过滤 ──
 
