@@ -126,27 +126,6 @@
     "hint": "超出后最早添加的答案会被移除",
     "default": 20
   },
-  "persona_fusion_mode": {
-    "description": "人格融合模式",
-    "type": "string",
-    "options": ["off", "blend", "full"],
-    "hint": "off=纯词库回复 / blend=LLM 润色词库回复 / full=LLM 读完词库上下文后自由生成。需要下方配置融合 LLM",
-    "default": "off"
-  },
-  "persona_fusion_provider": {
-    "description": "融合 LLM",
-    "type": "string",
-    "_special": "select_provider",
-    "hint": "用于人格融合的 LLM。建议使用带人格配置的主力模型",
-    "default": ""
-  },
-  "persona_fusion_persona": {
-    "description": "融合人格",
-    "type": "string",
-    "_special": "select_persona",
-    "hint": "融合时使用的人格。在 WebUI 人格管理中事先创建",
-    "default": ""
-  },
   "auto_schedule_enable": {
     "description": "定时切换开关",
     "type": "bool",

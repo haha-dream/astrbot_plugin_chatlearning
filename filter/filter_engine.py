@@ -1,7 +1,7 @@
 """
 过滤器
 
-控制消息是否被记录 / 是否触发回复。
+控制消息是否被记录。
 """
 
 import re
@@ -10,7 +10,7 @@ from astrbot.api.message_components import At, Face, Image, Plain, Reply
 
 
 class FilterEngine:
-    """三级过滤器：敏感词（不记录） / 黑名单用户（不记录） / 回复屏蔽词（不回复）"""
+    """二级过滤器：敏感词（不记录） / 黑名单用户（不记录）"""
 
     _ALLOWED_MESSAGE_COMPONENTS = (Plain, Face, Image, Reply)
     _RE_AT_QQ = re.compile(r"@(\S+?)\(\d+\)")
@@ -29,11 +29,9 @@ class FilterEngine:
         self,
         sensitive_words: list[str] | None = None,
         blocked_users: list[str] | None = None,
-        reply_filter_words: list[str] | None = None,
     ):
         self.sensitive_words = set(sensitive_words or [])
         self.blocked_users = {str(u) for u in (blocked_users or [])}
-        self.reply_filter_words = set(reply_filter_words or [])
 
     # ── 文本清洗 ──
 
@@ -133,12 +131,6 @@ class FilterEngine:
             return False, "包含敏感词"
 
         return True, ""
-
-    # ── 回复侧过滤 ──
-
-    def should_reply(self, text: str) -> bool:
-        """判断匹配到的消息是否应该被回复。"""
-        return not self._contains_any(text, self.reply_filter_words)
 
     # ── 工具 ──
 

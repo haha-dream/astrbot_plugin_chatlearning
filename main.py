@@ -13,7 +13,8 @@ from collections import OrderedDict
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star, register
+from astrbot.api.message_components import Plain, Reply
+from astrbot.api.star import Context, Star
 
 from .filter.filter_engine import FilterEngine
 from .learning.collector import Collector
@@ -23,13 +24,11 @@ from .storage.wordstock import WordStock
 LANCE_DB_DIR = "lancedb"
 
 
-@register(
-    "astrbot_plugin_chatlearning",
-    "satori",
-    "群聊对话学习与智能回复——基于向量嵌入的语义对话引擎",
-    "v0.4.3",
-)
 class ChatLearningPlugin(Star):
+    """群聊对话学习与智能回复——基于向量嵌入的语义对话引擎。"""
+
+    name = "astrbot_plugin_chatlearning"
+
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self._cfg = config
@@ -44,10 +43,14 @@ class ChatLearningPlugin(Star):
         self._model_lock = asyncio.Lock()
         self._embed_cache: OrderedDict[str, list[float]] = OrderedDict()
         self._embed_cache_max = 3000
-        self._recent_replies: dict[str, list[tuple]] = {}
+        self._recent_replies: dict[str, list[tuple[str, int, float]]] = {}
         self._cleanup_task: asyncio.Task | None = None
         self._data_root: str | None = None
         self._maintenance_state_path: str | None = None
+        self._llm_check_provider_id: str = ""
+        self._write_count: int = 0
+        self._reply_count: int = 0
+        self._group_locks: dict[str, asyncio.Lock] = {}
 
     # ═══ 配置快捷读取 ═══════════════════════════════════════
 
@@ -57,7 +60,11 @@ class ChatLearningPlugin(Star):
 
     async def _save(self):
         """持久化配置。"""
-        self._cfg.save_config()
+        save_async = getattr(self._cfg, "save_config_async", None)
+        if callable(save_async):
+            await save_async()
+        else:
+            self._cfg.save_config()
 
     def _is_group_learning(self, gid: str) -> bool:
         groups = self._C("learning_groups", []) or []
@@ -66,6 +73,11 @@ class ChatLearningPlugin(Star):
     def _is_group_reply(self, gid: str) -> bool:
         groups = self._C("reply_groups", []) or []
         return not groups or gid in {str(g) for g in groups}
+
+    @staticmethod
+    def _resolve_group_id(event: AstrMessageEvent, group_id: str = "") -> str | None:
+        gid = str(group_id).strip() if group_id else str(event.get_group_id() or "").strip()
+        return gid or None
 
     # ═══ 生命周期 ═════════════════════════════════════════════
 
@@ -130,21 +142,14 @@ class ChatLearningPlugin(Star):
                     "[ChatLearning] ⚠ 未配置 embedding_provider_id 且未启用本地向量"
                 )
                 self._embedding_ready = False
+            elif self._find_embedding_provider(target_id) is not None:
+                self._embedding_ready = True
+                logger.debug(f"[ChatLearning] Embedding Provider: {target_id}")
             else:
-                providers = self.context.get_all_embedding_providers()
-                found = any(
-                    (getattr(p, "provider_id", "") or getattr(p, "name", ""))
-                    == target_id
-                    for p in providers
+                self._embedding_ready = False
+                logger.warning(
+                    f"[ChatLearning] Embedding Provider '{target_id}' 未找到"
                 )
-                if found:
-                    self._embedding_ready = True
-                    logger.debug(f"[ChatLearning] Embedding Provider: {target_id}")
-                else:
-                    self._embedding_ready = False
-                    logger.warning(
-                        f"[ChatLearning] Embedding Provider '{target_id}' 未找到"
-                    )
 
         logger.info("[ChatLearning] ✅ 初始化完成")
 
@@ -188,6 +193,13 @@ class ChatLearningPlugin(Star):
             logger.debug("[ChatLearning] 跳过 QQ 官方机器人 Markdown 消息")
             return
 
+        # 快速删除需放在媒体/@/wake 检查之前：回复 bot 时可能附带 At 且 WakingStage 会标记 is_at_or_wake_command
+        handled, qd_reply = await self._handle_quick_delete(event, group_id)
+        if handled:
+            if qd_reply:
+                yield qd_reply
+            return
+
         # 视频、语音等非纯文本消息不参与学习/回复；表情和图片除外
         if self.filter_engine.has_unsupported_component(event.get_messages()):
             logger.debug("[ChatLearning] 跳过非纯文本消息")
@@ -199,7 +211,8 @@ class ChatLearningPlugin(Star):
             return
 
         user_id = str(event.get_sender_id())
-        timestamp = event.message_obj.timestamp if event.message_obj else time.time()
+        raw_ts = getattr(event.message_obj, "timestamp", None) if event.message_obj else None
+        timestamp = float(raw_ts) if raw_ts else time.time()
         plain_text = self.filter_engine.clean_at_mentions(event.message_str.strip())
         if not plain_text:
             return
@@ -208,13 +221,6 @@ class ChatLearningPlugin(Star):
 
         # 指令/@唤醒消息跳过学习/回复，留给 AstrBot LLM
         if event.is_at_or_wake_command:
-            return
-
-        # 快速删除
-        handled, qd_reply = await self._handle_quick_delete(event, group_id, plain_text)
-        if handled:
-            if qd_reply:
-                yield qd_reply
             return
 
         # 学习失败不应影响后续回复
@@ -237,83 +243,79 @@ class ChatLearningPlugin(Star):
         if not ok:
             return
 
-        qa = self.collector.feed(group_id, text, text, timestamp)
-        if qa is None:
-            return
+        lock = self._group_locks.setdefault(group_id, asyncio.Lock())
+        async with lock:
+            qa = self.collector.feed(group_id, text, text, timestamp)
+            if qa is None:
+                return
 
-        # 先查 DB（快），确定哪些需要 embedding，再批量生成
-        try:
-            ans_exist, q_exist = await asyncio.gather(
-                self.wordstock.get_by_text(qa.group_id, qa.answer_text),
-                self.wordstock.get_by_text(qa.group_id, qa.question_text),
-            )
-        except Exception as e:
-            logger.warning(f"[ChatLearning] 查询词库失败: {e}")
-            return
+            try:
+                q_exist = await self.wordstock.get_by_text(qa.group_id, qa.question_text)
+            except Exception as e:
+                logger.warning(f"[ChatLearning] 查询词库失败: {e}")
+                return
 
-        need_embed = []
-        if not ans_exist:
-            need_embed.append(qa.answer_text)
-        if not q_exist:
-            need_embed.append(qa.question_text)
+            if q_exist:
+                await self.wordstock.add_answer(
+                    q_exist["id"], qa.answer_text, qa.answer_raw
+                )
+            else:
+                vec = await self._get_embedding(qa.question_text)
+                if vec is None:
+                    return
+                rid = await self.wordstock.add_question(
+                    qa.group_id,
+                    qa.question_text,
+                    qa.question_raw,
+                    vec,
+                    answer_text=qa.answer_text,
+                    answer_raw=qa.answer_raw,
+                )
+                if not rid:
+                    return
 
-        vecs = {}
-        if need_embed:
-            batch = await self._get_embeddings_batch(need_embed)
-            for t, v in zip(need_embed, batch):
-                if v is not None:
-                    vecs[t] = v
-
-        # 1) 答案侧
-        if ans_exist:
-            await self.wordstock.touch(ans_exist["id"])
-        elif qa.answer_text in vecs:
-            await self.wordstock.add_question(
-                qa.group_id, qa.answer_text, qa.answer_raw, vecs[qa.answer_text]
-            )
-        else:
-            return
-
-        # 2) 问题侧
-        if q_exist:
-            await self.wordstock.add_answer(
-                q_exist["id"], qa.answer_text, qa.answer_raw
-            )
-        elif qa.question_text in vecs:
-            await self.wordstock.add_question(
-                qa.group_id,
-                qa.question_text,
-                qa.question_raw,
-                vecs[qa.question_text],
-                answer_text=qa.answer_text,
-                answer_raw=qa.answer_raw,
-            )
-
-        self._write_count = getattr(self, "_write_count", 0) + 1
-        if self._write_count % 100 == 0:
-            await self.wordstock.ensure_index()
-        if self._write_count % 10 == 0:
-            logger.info(f"[ChatLearning] 已学习 {self._write_count} 条")
+            self._write_count += 1
+            if self._write_count % 100 == 0:
+                await self.wordstock.ensure_index()
+            if self._write_count % 10 == 0:
+                logger.info(f"[ChatLearning] 已学习 {self._write_count} 条")
 
     # ═══ 回复 ═════════════════════════════════════════════════
 
     async def _handle_reply(self, event, group_id, text):
+        if not self.responder:
+            return
+
+        last_reply = self._reply_cd.get(group_id, 0)
+        if not self.responder.should_attempt(last_reply):
+            return
+
         vec = await self._get_embedding(text)
         if vec is None:
             return
 
         threshold = self._C("cos_match_threshold", 0.75)
+        if self._C("llm_semantic_check") and self._llm_check_provider_id:
+            search_threshold = min(threshold * 0.8, self._C("llm_semantic_threshold", 0.5))
+        else:
+            search_threshold = threshold
 
         async def _search(gid, qvec):
             return await self.wordstock.search_similar(
-                gid, qvec, threshold=threshold * 0.8, top_k=20
+                gid, qvec, threshold=search_threshold, top_k=20
             )
 
-        cross_fn = (
-            self.wordstock.search_cross_group if self._C("cross_group_search") else None
-        )
+        cross_fn = None
+        if self._C("cross_group_search"):
+            cross_threshold = min(max(threshold - 0.05, 0.6), search_threshold)
 
-        last_reply = self._reply_cd.get(group_id, 0)
+            async def _cross_search(exclude_gid, qvec):
+                return await self.wordstock.search_cross_group(
+                    exclude_gid, qvec, threshold=cross_threshold, top_k=20
+                )
+
+            cross_fn = _cross_search
+
         result = await self.responder.try_reply(
             _search,
             group_id,
@@ -321,104 +323,106 @@ class ChatLearningPlugin(Star):
             query_text=text,
             last_reply_time=last_reply,
             cross_search_fn=cross_fn,
+            gate=False,
         )
         if result is None:
             return
 
-        self._reply_cd[group_id] = time.time()
+        text_out = self._apply_placeholders(result.answer_text, event)
+        q_id = result.question_id
+        if not q_id and not result.cross_group:
+            q_exist = await self.wordstock.get_by_text(group_id, result.question_text)
+            q_id = q_exist["id"] if q_exist else 0
 
-        q_exist = await self.wordstock.get_by_text(group_id, result.question_text)
-        q_id = q_exist["id"] if q_exist else 0
         recent = self._recent_replies.get(group_id, [])
-        recent.append((result.answer_text, q_id, time.time()))
+        recent.append((text_out, q_id, time.time()))
         if len(recent) > 30:
             recent = recent[-30:]
         self._recent_replies[group_id] = recent
 
-        fusion_mode = self._C("persona_fusion_mode", "off")
-        if fusion_mode in ("blend", "full"):
-            fused = await self._persona_fusion(
-                event, text, result.answer_text, fusion_mode
-            )
-            if fused:
-                await asyncio.sleep(random.uniform(0.5, 2.0))
-                self._reply_count = getattr(self, "_reply_count", 0) + 1
-                logger.info(
-                    f"[ChatLearning] 回复 #{self._reply_count}: "
-                    f"Q={text[:20]} → A={fused[:20]}"
-                )
-                event.stop_event()
-                yield event.plain_result(fused)
-            return
-
+        self._reply_cd[group_id] = time.time()
         await asyncio.sleep(random.uniform(0.5, 2.0))
-        text_out = self._apply_placeholders(result.answer_text, event)
-        self._reply_count = getattr(self, "_reply_count", 0) + 1
+        self._reply_count += 1
         logger.info(
             f"[ChatLearning] 回复 #{self._reply_count}: "
-            f"Q={text[:20]} → A={result.answer_text[:20]}"
+            f"Q={text[:20]} → A={text_out[:20]}"
         )
         yield event.plain_result(text_out)
 
-    async def _persona_fusion(self, event, query, matched_answer, mode):
-        """用配置的融合 LLM 润色或生成回复（带会话上下文）。"""
-        pid = (self._C("persona_fusion_provider", "") or "").strip()
-        if not pid:
-            return None
-        prov = self.context.get_provider_by_id(pid)
-        if not prov:
-            return None
-
-        persona_prompt = await self._get_fusion_persona_prompt()
-        prompt = self._build_fusion_prompt(query, matched_answer, mode)
-
-        try:
-            resp = await prov.text_chat(
-                prompt=prompt,
-                system_prompt=persona_prompt or None,
-            )
-            return (resp.completion_text or "").strip()
-        except Exception as e:
-            logger.warning(f"[ChatLearning] 融合生成失败: {e}")
-            return None
-
-    async def _get_fusion_persona_prompt(self):
-        pid = (self._C("persona_fusion_persona", "") or "").strip()
-        if not pid:
-            return ""
-        try:
-            p = await self.context.persona_manager.get_persona(pid)
-            return p.system_prompt if p else ""
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _build_fusion_prompt(query, answer, mode):
-        if mode == "blend":
-            return f"用户说：{query}\n词库匹配的参考回复：{answer}\n请用你自己的风格改写这条回复，保持原意但让表达更自然。只输出改写后的文本。"
-        return f"用户说：{query}\n参考上下文（来自群聊词库）：{answer}\n请用你自己的风格回复这条消息。只输出回复文本。"
-
     # ═══ 快速删除 ═════════════════════════════════════════════
 
-    async def _handle_quick_delete(self, event, group_id, text):
-        t = text.strip().lower()
+    @staticmethod
+    def _extract_reply_segment(components: list | None):
+        for seg in components or []:
+            if isinstance(seg, Reply) or str(getattr(seg, "type", "")) == "Reply":
+                return seg
+        return None
+
+    def _extract_command_text(self, event: AstrMessageEvent) -> str:
+        plain_parts = [
+            getattr(seg, "text", "")
+            for seg in (event.get_messages() or [])
+            if isinstance(seg, Plain)
+        ]
+        if plain_parts:
+            return "".join(plain_parts).strip()
+        return self.filter_engine.clean_at_mentions(event.message_str.strip()).strip()
+
+    @staticmethod
+    def _extract_reply_text(reply_seg) -> str:
+        text = (
+            getattr(reply_seg, "message_str", None)
+            or getattr(reply_seg, "text", None)
+            or ""
+        )
+        if not text and getattr(reply_seg, "chain", None):
+            text = "".join(
+                getattr(seg, "text", "")
+                for seg in reply_seg.chain
+                if isinstance(seg, Plain) or str(getattr(seg, "type", "")) == "Plain"
+            )
+        return str(text).strip()
+
+    async def _handle_quick_delete(self, event: AstrMessageEvent, group_id: str):
+        reply_seg = self._extract_reply_segment(event.get_messages())
+        if reply_seg is None:
+            return False, None
+
+        t = self._extract_command_text(event).lower()
         if t not in ("!d", "!delete", "！d", "！delete"):
             return False, None
-        for seg in event.get_messages():
-            if hasattr(seg, "type") and str(seg.type) == "Reply":
-                break
-        else:
+
+        reply_sender = getattr(reply_seg, "sender_id", None) or getattr(
+            reply_seg, "qq", None
+        )
+        self_id = event.get_self_id()
+        if reply_sender and self_id and str(reply_sender) != str(self_id):
             return False, None
+
+        event.stop_event()
 
         recent = self._recent_replies.get(group_id, [])
         if not recent:
             return True, event.plain_result("没有可删除的最近回复")
 
-        _, ws_id, _ = recent.pop()
+        reply_text = self._extract_reply_text(reply_seg)
+        match_idx = None
+        if reply_text:
+            for idx in range(len(recent) - 1, -1, -1):
+                if recent[idx][0].strip() == reply_text:
+                    match_idx = idx
+                    break
+            if match_idx is None:
+                return True, event.plain_result("未找到对应的最近回复记录")
+        else:
+            match_idx = len(recent) - 1
+
+        _, ws_id, _ = recent.pop(match_idx)
         self._recent_replies[group_id] = recent
         if ws_id > 0:
-            await self.wordstock.delete(ws_id)
-            return True, event.plain_result(f"🗑 已从词库删除 #{ws_id}")
+            deleted = await self.wordstock.delete(ws_id)
+            if deleted:
+                return True, event.plain_result(f"🗑 已从词库删除 #{ws_id}")
         return True, event.plain_result("🗑 已移除最近回复")
 
     # ═══ 后台维护 ═════════════════════════════════════════════
@@ -606,7 +610,85 @@ class ChatLearningPlugin(Star):
 
     # ═══ Embedding ════════════════════════════════════════════
 
-    async def _get_embedding(self, text):
+    @staticmethod
+    def _provider_matches_id(provider, target_id: str) -> bool:
+        """兼容 AstrBot Provider.meta().id 以及测试桩属性。"""
+        meta_fn = getattr(provider, "meta", None)
+        if callable(meta_fn):
+            try:
+                if getattr(meta_fn(), "id", "") == target_id:
+                    return True
+            except Exception:
+                pass
+        cfg = getattr(provider, "provider_config", None)
+        if isinstance(cfg, dict) and cfg.get("id") == target_id:
+            return True
+        return (
+            getattr(provider, "provider_id", "") or getattr(provider, "name", "")
+        ) == target_id
+
+    def _find_embedding_provider(self, target_id: str):
+        if not target_id:
+            return None
+        prov = self.context.get_provider_by_id(target_id)
+        if prov is not None and callable(getattr(prov, "get_embedding", None)):
+            return prov
+        for p in self.context.get_all_embedding_providers() or []:
+            if self._provider_matches_id(p, target_id):
+                return p
+        return None
+
+    def _cache_embed_put(self, text: str, vec: list[float]) -> None:
+        self._embed_cache[text] = vec
+        self._embed_cache.move_to_end(text)
+        while len(self._embed_cache) > self._embed_cache_max:
+            self._embed_cache.popitem(last=False)
+
+    async def _ensure_local_model(self):
+        if self._local_model is not None:
+            return self._local_model
+        async with self._model_lock:
+            if self._local_model is not None:
+                return self._local_model
+            try:
+                from astrbot.core.utils.astrbot_path import (
+                    get_astrbot_plugin_data_path,
+                )
+                from sentence_transformers import SentenceTransformer
+
+                model_name = self._C(
+                    "local_embedding_model", "BAAI/bge-small-zh-v1.5"
+                )
+                os.environ["HF_ENDPOINT"] = self._C(
+                    "hf_endpoint", "https://huggingface.co"
+                )
+                cache_dir = os.path.join(
+                    get_astrbot_plugin_data_path(), self.name, "hf_cache"
+                )
+                os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", cache_dir)
+
+                logger.debug(f"[ChatLearning] 加载本地模型: {model_name}")
+                try:
+                    self._local_model = await asyncio.to_thread(
+                        SentenceTransformer, model_name, local_files_only=True
+                    )
+                except Exception:
+                    logger.debug("[ChatLearning] 缓存未命中，从远程下载...")
+                    self._local_model = await asyncio.to_thread(
+                        SentenceTransformer, model_name
+                    )
+                logger.debug("[ChatLearning] 本地模型加载完成")
+            except ImportError:
+                logger.error("[ChatLearning] sentence-transformers 未安装")
+                self._embedding_ready = False
+                return None
+            except Exception as e:
+                logger.error(f"[ChatLearning] 本地模型加载失败: {e}")
+                self._embedding_ready = False
+                return None
+        return self._local_model
+
+    async def _get_embedding(self, text: str) -> list[float] | None:
         if not text.strip():
             return None
         if text in self._embed_cache:
@@ -623,65 +705,24 @@ class ChatLearningPlugin(Star):
             result = await self._local_embed(text)
         else:
             target_id = (self._C("embedding_provider_id", "") or "").strip()
-            for p in self.context.get_all_embedding_providers():
-                if (
-                    getattr(p, "provider_id", "") or getattr(p, "name", "")
-                ) == target_id:
-                    try:
-                        result = await p.get_embedding(text)
-                    except Exception:
-                        pass
-                    break
+            prov = self._find_embedding_provider(target_id)
+            if prov is not None:
+                try:
+                    result = await prov.get_embedding(text)
+                except Exception as e:
+                    logger.warning(f"[ChatLearning] 在线 embedding 失败: {e}")
 
         if result is not None:
-            self._embed_cache[text] = result
-            while len(self._embed_cache) > self._embed_cache_max:
-                self._embed_cache.popitem(last=False)
+            self._cache_embed_put(text, result)
         return result
 
-    async def _local_embed(self, text):
-        async with self._model_lock:
-            if self._local_model is None:
-                try:
-                    from astrbot.core.utils.astrbot_path import (
-                        get_astrbot_plugin_data_path,
-                    )
-
-                    model_name = self._C(
-                        "local_embedding_model", "BAAI/bge-small-zh-v1.5"
-                    )
-                    os.environ["HF_ENDPOINT"] = self._C(
-                        "hf_endpoint", "https://huggingface.co"
-                    )
-                    cache_dir = os.path.join(
-                        get_astrbot_plugin_data_path(), self.name, "hf_cache"
-                    )
-                    os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", cache_dir)
-
-                    from sentence_transformers import SentenceTransformer
-
-                    logger.debug(f"[ChatLearning] 加载本地模型: {model_name}")
-                    try:
-                        self._local_model = await asyncio.to_thread(
-                            SentenceTransformer, model_name, local_files_only=True
-                        )
-                    except Exception:
-                        logger.debug("[ChatLearning] 缓存未命中，从远程下载...")
-                        self._local_model = await asyncio.to_thread(
-                            SentenceTransformer, model_name
-                        )
-                    logger.debug("[ChatLearning] 本地模型加载完成")
-                except ImportError:
-                    logger.error("[ChatLearning] sentence-transformers 未安装")
-                    self._embedding_ready = False
-                    return None
-                except Exception as e:
-                    logger.error(f"[ChatLearning] 本地模型加载失败: {e}")
-                    self._embedding_ready = False
-                    return None
+    async def _local_embed(self, text: str) -> list[float] | None:
+        model = await self._ensure_local_model()
+        if model is None:
+            return None
         try:
             vec = await asyncio.to_thread(
-                self._local_model.encode,
+                model.encode,
                 text,
                 normalize_embeddings=True,
                 show_progress_bar=False,
@@ -692,66 +733,69 @@ class ChatLearningPlugin(Star):
             return None
 
     async def _get_embeddings_batch(self, texts: list[str]) -> list[list[float] | None]:
-        """批量生成向量，比逐个调用效率高得多。"""
-        cleaned = [t for t in texts if t.strip()]
-        if not cleaned:
-            return [None] * len(texts)
+        """批量生成向量，优先命中缓存并利用批量接口。"""
+        result: list[list[float] | None] = [None] * len(texts)
+        missing_texts: list[str] = []
+        missing_map: dict[str, list[int]] = {}
 
-        result = [None] * len(texts)
-        clean_indices = [i for i, t in enumerate(texts) if t.strip()]
+        for idx, text in enumerate(texts):
+            if not text.strip():
+                continue
+            if text in self._embed_cache:
+                self._embed_cache.move_to_end(text)
+                result[idx] = self._embed_cache[text]
+                continue
+            if text not in missing_map:
+                missing_map[text] = []
+                missing_texts.append(text)
+            missing_map[text].append(idx)
 
+        if not missing_texts or not self._embedding_ready:
+            return result
+
+        vecs: list[list[float] | None] = []
         if self._C("enable_local_embedding"):
-            async with self._model_lock:
-                if self._local_model is None:
-                    try:
-                        from sentence_transformers import SentenceTransformer
-
-                        from astrbot.core.utils.astrbot_path import (
-                            get_astrbot_plugin_data_path,
-                        )
-
-                        model_name = self._C(
-                            "local_embedding_model", "BAAI/bge-small-zh-v1.5"
-                        )
-                        os.environ["HF_ENDPOINT"] = self._C(
-                            "hf_endpoint", "https://huggingface.co"
-                        )
-                        cache_dir = os.path.join(
-                            get_astrbot_plugin_data_path(), self.name, "hf_cache"
-                        )
-                        os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", cache_dir)
-                        logger.debug(f"[ChatLearning] 加载本地模型: {model_name}")
-                        try:
-                            self._local_model = await asyncio.to_thread(
-                                SentenceTransformer, model_name, local_files_only=True
-                            )
-                        except Exception:
-                            self._local_model = await asyncio.to_thread(
-                                SentenceTransformer, model_name
-                            )
-                        logger.debug("[ChatLearning] 本地模型加载完成")
-                    except ImportError:
-                        logger.error("[ChatLearning] sentence-transformers 未安装")
-                        self._embedding_ready = False
-                        return result
-                    except Exception as e:
-                        logger.error(f"[ChatLearning] 本地模型加载失败: {e}")
-                        self._embedding_ready = False
-                        return result
-                vecs = await asyncio.to_thread(
-                    self._local_model.encode,
-                    cleaned,
+            model = await self._ensure_local_model()
+            if model is None:
+                return result
+            try:
+                encoded = await asyncio.to_thread(
+                    model.encode,
+                    missing_texts,
                     normalize_embeddings=True,
                     show_progress_bar=False,
                 )
-                for idx, vec in zip(clean_indices, vecs.tolist()):
-                    result[idx] = vec
-                    self._embed_cache[texts[idx]] = vec
-                    while len(self._embed_cache) > self._embed_cache_max:
-                        self._embed_cache.popitem(last=False)
+                vecs = encoded.tolist()
+            except Exception as e:
+                logger.error(f"[ChatLearning] 批量本地 embedding 失败: {e}")
+                return result
         else:
-            for idx in clean_indices:
-                result[idx] = await self._get_embedding(texts[idx])
+            target_id = (self._C("embedding_provider_id", "") or "").strip()
+            prov = self._find_embedding_provider(target_id)
+            if prov is None:
+                return result
+            batch_fn = getattr(prov, "get_embeddings", None)
+            if callable(batch_fn):
+                try:
+                    vecs = await batch_fn(missing_texts)
+                except Exception as e:
+                    logger.warning(f"[ChatLearning] 在线批量 embedding 失败，回退单条: {e}")
+                    vecs = []
+            if len(vecs) != len(missing_texts):
+                vecs = []
+                for t in missing_texts:
+                    try:
+                        vecs.append(await prov.get_embedding(t))
+                    except Exception as e:
+                        logger.warning(f"[ChatLearning] 在线 embedding 失败: {e}")
+                        vecs.append(None)
+
+        for t, vec in zip(missing_texts, vecs):
+            if vec is None:
+                continue
+            self._cache_embed_put(t, vec)
+            for idx in missing_map[t]:
+                result[idx] = vec
 
         return result
 
@@ -762,12 +806,14 @@ class ChatLearningPlugin(Star):
         pass
 
     @_grp_learn.command("on")
+    @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_learn_on(self, event):
         self._cfg["learning"] = True
         await self._save()
         yield event.plain_result("✅ 学习模式已开启")
 
     @_grp_learn.command("off")
+    @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_learn_off(self, event):
         self._cfg["learning"] = False
         await self._save()
@@ -775,10 +821,10 @@ class ChatLearningPlugin(Star):
 
     @_grp_learn.command("status")
     async def cmd_learn_status(self, event):
-        gid = str(event.get_group_id() or "?")
+        gid = self._resolve_group_id(event)
         count = await self.wordstock.count(gid)
         yield event.plain_result(
-            f"📊 学习状态\n模式: {'开启' if self._C('learning') else '关闭'}\n本群词条: {count}\n间隔: {self._C('interval', 10)}s"
+            f"📊 学习状态\n模式: {'开启' if self._C('learning') else '关闭'}\n{'本群' if gid else '全部'}词条: {count}\n间隔: {self._C('interval', 10)}s"
         )
 
     @_grp_learn.group("group")
@@ -788,8 +834,11 @@ class ChatLearningPlugin(Star):
     @_grp_learn_group.command("add")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_learn_group_add(self, event, group_id=""):
-        gid = group_id or str(event.get_group_id())
-        lst = list(self._C("learning_groups", []) or [])
+        gid = self._resolve_group_id(event, group_id)
+        if not gid:
+            yield event.plain_result("❌ 请在群聊中使用或指定群号")
+            return
+        lst = [str(g) for g in (self._C("learning_groups", []) or [])]
         if gid not in lst:
             lst.append(gid)
             self._cfg["learning_groups"] = lst
@@ -799,14 +848,15 @@ class ChatLearningPlugin(Star):
     @_grp_learn_group.command("remove")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_learn_group_remove(self, event, group_id):
-        lst = [g for g in (self._C("learning_groups", []) or []) if g != group_id]
+        target = str(group_id)
+        lst = [str(g) for g in (self._C("learning_groups", []) or []) if str(g) != target]
         self._cfg["learning_groups"] = lst
         await self._save()
-        yield event.plain_result(f"❌ 已移除学习群: {group_id}")
+        yield event.plain_result(f"❌ 已移除学习群: {target}")
 
     @_grp_learn_group.command("list")
     async def cmd_learn_group_list(self, event):
-        groups = self._C("learning_groups", []) or []
+        groups = [str(g) for g in (self._C("learning_groups", []) or [])]
         yield event.plain_result(
             "📋 学习群:\n" + "\n".join(sorted(groups)) if groups else "📋 学习群: 全部"
         )
@@ -818,12 +868,14 @@ class ChatLearningPlugin(Star):
         pass
 
     @_grp_reply.command("on")
+    @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_reply_on(self, event):
         self._cfg["reply"] = True
         await self._save()
         yield event.plain_result("✅ 回复模式已开启")
 
     @_grp_reply.command("off")
+    @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_reply_off(self, event):
         self._cfg["reply"] = False
         await self._save()
@@ -831,7 +883,7 @@ class ChatLearningPlugin(Star):
 
     @_grp_reply.command("status")
     async def cmd_reply_status(self, event):
-        gid = str(event.get_group_id() or "?")
+        gid = self._resolve_group_id(event)
         count = await self.wordstock.count(gid)
         yield event.plain_result(
             f"💬 回复状态\n模式: {'开启' if self._C('reply') else '关闭'}\n概率: {self._C('reply_chance', 50)}%\nCD: {self._C('reply_cd', 30)}s\n阈值: {self._C('cos_match_threshold', 0.75)}\n词条: {count}"
@@ -844,8 +896,11 @@ class ChatLearningPlugin(Star):
     @_grp_reply_group.command("add")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_reply_group_add(self, event, group_id=""):
-        gid = group_id or str(event.get_group_id())
-        lst = list(self._C("reply_groups", []) or [])
+        gid = self._resolve_group_id(event, group_id)
+        if not gid:
+            yield event.plain_result("❌ 请在群聊中使用或指定群号")
+            return
+        lst = [str(g) for g in (self._C("reply_groups", []) or [])]
         if gid not in lst:
             lst.append(gid)
             self._cfg["reply_groups"] = lst
@@ -855,14 +910,15 @@ class ChatLearningPlugin(Star):
     @_grp_reply_group.command("remove")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_reply_group_remove(self, event, group_id):
-        lst = [g for g in (self._C("reply_groups", []) or []) if g != group_id]
+        target = str(group_id)
+        lst = [str(g) for g in (self._C("reply_groups", []) or []) if str(g) != target]
         self._cfg["reply_groups"] = lst
         await self._save()
-        yield event.plain_result(f"❌ 已移除回复群: {group_id}")
+        yield event.plain_result(f"❌ 已移除回复群: {target}")
 
     @_grp_reply_group.command("list")
     async def cmd_reply_group_list(self, event):
-        groups = self._C("reply_groups", []) or []
+        groups = [str(g) for g in (self._C("reply_groups", []) or [])]
         yield event.plain_result(
             "📋 回复群:\n" + "\n".join(sorted(groups)) if groups else "📋 回复群: 全部"
         )
@@ -875,16 +931,20 @@ class ChatLearningPlugin(Star):
 
     @_grp_wordstock.command("stats")
     async def cmd_wordstock_stats(self, event):
-        gid = str(event.get_group_id())
+        gid = self._resolve_group_id(event)
         total = await self.wordstock.count(gid)
-        yield event.plain_result(f"📚 词库统计 (群 {gid})\n词条总数: {total}")
+        scope = f"群 {gid}" if gid else "全部"
+        yield event.plain_result(f"📚 词库统计 ({scope})\n词条总数: {total}")
 
     @_grp_wordstock.command("search")
     async def cmd_wordstock_search(self, event, keyword=""):
         if not keyword:
             yield event.plain_result("用法: /wordstock search <关键词>")
             return
-        gid = str(event.get_group_id())
+        gid = self._resolve_group_id(event)
+        if not gid:
+            yield event.plain_result("❌ 请在群聊中使用该指令")
+            return
         rec = await self.wordstock.get_by_text(gid, keyword)
         if rec:
             yield event.plain_result(
@@ -911,27 +971,28 @@ class ChatLearningPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_wordstock_delete(self, event, entry_id):
         try:
-            await self.wordstock.delete(int(entry_id))
-            yield event.plain_result(f"🗑 已删除词条 #{entry_id}")
+            deleted = await self.wordstock.delete(int(entry_id))
+            if deleted:
+                yield event.plain_result(f"🗑 已删除词条 #{entry_id}")
+            else:
+                yield event.plain_result(f"未找到词条 #{entry_id}")
         except ValueError:
             yield event.plain_result("❌ 无效的 ID")
 
     @_grp_wordstock.command("export")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_wordstock_export(self, event):
-        import json
-
         from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-        gid = str(event.get_group_id())
-        data = await self.wordstock.export_data(gid if gid else None)
+        gid = self._resolve_group_id(event)
+        data = await self.wordstock.export_data(gid)
         if not data:
             yield event.plain_result("📭 词库为空")
             return
         export_path = os.path.join(
             get_astrbot_plugin_data_path(),
             self.name,
-            f"export_{gid}_{int(time.time())}.json",
+            f"export_{gid or 'all'}_{int(time.time())}.json",
         )
         os.makedirs(os.path.dirname(export_path), exist_ok=True)
         with open(export_path, "w", encoding="utf-8") as f:
@@ -977,6 +1038,8 @@ class ChatLearningPlugin(Star):
             lst.append(word)
             self._cfg["sensitive_words"] = lst
             await self._save()
+        if self.filter_engine:
+            self.filter_engine.sensitive_words = set(lst)
         yield event.plain_result(f"🚫 已添加敏感词: {word}")
 
     @_grp_filter_sensitive.command("remove")
@@ -984,6 +1047,8 @@ class ChatLearningPlugin(Star):
         lst = [w for w in (self._C("sensitive_words", []) or []) if w != word]
         self._cfg["sensitive_words"] = lst
         await self._save()
+        if self.filter_engine:
+            self.filter_engine.sensitive_words = set(lst)
         yield event.plain_result(f"✅ 已移除敏感词: {word}")
 
     @_grp_filter_sensitive.command("list")
@@ -999,24 +1064,29 @@ class ChatLearningPlugin(Star):
 
     @_grp_filter_blocked.command("add")
     async def cmd_filter_blocked_add(self, event, user_id):
-        lst = list(self._C("blocked_users", []) or [])
+        lst = [str(u) for u in (self._C("blocked_users", []) or [])]
         uid = str(user_id)
         if uid not in lst:
             lst.append(uid)
             self._cfg["blocked_users"] = lst
             await self._save()
+        if self.filter_engine:
+            self.filter_engine.blocked_users = set(lst)
         yield event.plain_result(f"🚫 已添加黑名单: {user_id}")
 
     @_grp_filter_blocked.command("remove")
     async def cmd_filter_blocked_remove(self, event, user_id):
-        lst = [u for u in (self._C("blocked_users", []) or []) if u != str(user_id)]
+        uid = str(user_id)
+        lst = [str(u) for u in (self._C("blocked_users", []) or []) if str(u) != uid]
         self._cfg["blocked_users"] = lst
         await self._save()
+        if self.filter_engine:
+            self.filter_engine.blocked_users = set(lst)
         yield event.plain_result(f"✅ 已移除黑名单: {user_id}")
 
     @_grp_filter_blocked.command("list")
     async def cmd_filter_blocked_list(self, event):
-        users = self._C("blocked_users", []) or []
+        users = [str(u) for u in (self._C("blocked_users", []) or [])]
         yield event.plain_result(
             "🚫 黑名单:\n" + "\n".join(users) if users else "🚫 黑名单: 无"
         )

@@ -24,6 +24,7 @@ import inspect
 import os
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 
 import lancedb
 import numpy as np
@@ -62,6 +63,9 @@ class WordStock:
             os.path.dirname(os.path.abspath(db_path)), ".lance_writer.lock"
         )
         self._writer_lock = FileLock(self._writer_lock_path)
+        self.max_answers: int = 20
+        self._index_built: bool = False
+        self._last_id: int = 0
 
     # ── 生命周期 ────────────────────────────────────────────
 
@@ -127,6 +131,31 @@ class WordStock:
         except Exception as e:
             logger.warning(f"[WordStock] 刷新表快照失败: {e}")
 
+    @staticmethod
+    def _escape_sql(value: str) -> str:
+        """转义 SQL 字符串字面量中的单引号。"""
+        return str(value).replace("'", "''")
+
+    async def _query_with_retry(self, build_query: Callable, label: str):
+        """执行只读 LanceDB 查询，遇到陈旧快照异常时刷新后重试一次。"""
+        for attempt in range(2):
+            try:
+                return await build_query().to_arrow()
+            except Exception as e:
+                if attempt == 1:
+                    logger.error(f"[WordStock] {label}失败: {e}")
+                    return None
+                logger.warning(f"[WordStock] {label}失败，刷新后重试: {e}")
+                await self._refresh_table()
+        return None
+
+    def _next_id(self, now: float) -> int:
+        """生成单调递增的微秒级记录 ID，避免同微秒写入冲突。"""
+        candidate = int(now * 1_000_000)
+        record_id = max(candidate, self._last_id + 1)
+        self._last_id = record_id
+        return record_id
+
     # ── 写入 ────────────────────────────────────────────────
 
     async def add_question(
@@ -138,7 +167,11 @@ class WordStock:
         answer_text: str = "",
         answer_raw: str = "",
     ) -> int:
-        """新增一条问题记录（可选附带首个答案）。返回写入后的 id。"""
+        """新增一条问题记录（可选附带首个答案）。返回写入后的 id，失败返回 0。"""
+        if not vector:
+            logger.error("[WordStock] 向量为空，拒绝写入问题记录")
+            return 0
+
         async with self._lock:
             await self._refresh_table()
             now = time.time()
@@ -183,9 +216,10 @@ class WordStock:
                     }
                 ]
 
+            record_id = self._next_id(now)
             row = [
                 {
-                    "id": int(now * 1_000_000),  # 微秒级时间戳作 ID
+                    "id": record_id,
                     "group_id": group_id,
                     "question_text": question_text,
                     "question_raw": question_raw,
@@ -203,7 +237,7 @@ class WordStock:
             logger.debug(
                 f"[WordStock] 新增问题: group={group_id} text={question_text[:50]}..."
             )
-            return row[0]["id"]
+            return record_id
 
     async def add_answer(
         self,
@@ -216,7 +250,7 @@ class WordStock:
             await self._refresh_table()
             if self._table is None:
                 return False
-            result = await self._table.query().where(f"id = {record_id}").to_arrow()
+            result = await self._table.query().where(f"id = {int(record_id)}").to_arrow()
             if result.num_rows == 0:
                 logger.warning(f"[WordStock] add_answer: id={record_id} 不存在")
                 return False
@@ -261,7 +295,7 @@ class WordStock:
 
             # 使用 merge_insert 原子 upsert 替代 delete + insert
             row_dict = {
-                "id": record_id,
+                "id": int(record_id),
                 "group_id": str(row["group_id"]),
                 "question_text": str(row["question_text"]),
                 "question_raw": str(row["question_raw"]),
@@ -297,46 +331,41 @@ class WordStock:
         """向量相似搜索，返回 top_k 条满足阈值的记录。"""
         if self._table is None or self._vec_dim is None:
             return []
-        if self._vec_dim and len(query_vec) != self._vec_dim:
+        if len(query_vec) != self._vec_dim:
             logger.error(
                 f"[WordStock] 查询向量 {len(query_vec)} 维 != 词库 {self._vec_dim} 维！"
                 "请删除旧数据或切换匹配的 embedding 模型。"
             )
             return []
 
-        results = None
-        for attempt in range(2):
-            try:
-                results = await (
-                    self._table.query()
-                    .nearest_to(query_vec)
-                    .where(f"group_id = '{group_id}'")
-                    .distance_type("cosine")
-                    .limit(top_k)
-                    .to_arrow()
-                )
-                break
-            except Exception as e:
-                if attempt == 1:
-                    logger.error(f"[WordStock] 搜索失败: {e}")
-                    return []
-                logger.warning(f"[WordStock] 搜索失败，刷新后重试: {e}")
-                await self._refresh_table()
+        escaped_gid = self._escape_sql(group_id)
+        results = await self._query_with_retry(
+            lambda: (
+                self._table.query()
+                .nearest_to(query_vec)
+                .where(f"group_id = '{escaped_gid}'")
+                .distance_type("cosine")
+                .limit(top_k)
+            ),
+            "搜索",
+        )
         if results is None:
             return []
 
         records = []
         for row in results.to_pylist():
             score = row.get("_distance", 0)
-            if 1.0 - score >= threshold:  # cosine distance → similarity
+            sim = 1.0 - score
+            if sim >= threshold:  # cosine distance → similarity
                 records.append(
                     {
                         "id": row["id"],
+                        "group_id": row["group_id"],
                         "question_text": row["question_text"],
                         "question_raw": row["question_raw"],
                         "answers": row["answers"] or [],
                         "freq": row["freq"],
-                        "score": 1.0 - score,
+                        "score": sim,
                     }
                 )
 
@@ -347,7 +376,7 @@ class WordStock:
         """按 ID 获取单条记录。"""
         if self._table is None:
             return None
-        result = await self._table.query().where(f"id = {record_id}").to_arrow()
+        result = await self._table.query().where(f"id = {int(record_id)}").to_arrow()
         if result.num_rows == 0:
             return None
         return result.to_pylist()[0]
@@ -357,34 +386,24 @@ class WordStock:
         cache_key = self._text_cache_key(group_id, question_text)
         if cache_key in self._text_cache:
             self._text_cache.move_to_end(cache_key)
-            return self._text_cache[cache_key]
+            return dict(self._text_cache[cache_key])
 
         if self._table is None:
             return None
-        escaped = question_text.replace("'", "''")
+        escaped_gid = self._escape_sql(group_id)
+        escaped_text = self._escape_sql(question_text)
 
-        result = None
-        for attempt in range(2):
-            try:
-                result = await (
-                    self._table.query()
-                    .where(f"group_id = '{group_id}' AND question_text = '{escaped}'")
-                    .to_arrow()
-                )
-                break
-            except Exception as e:
-                if attempt == 1:
-                    logger.error(f"[WordStock] 按文本查询失败: {e}")
-                    return None
-                logger.warning(f"[WordStock] 按文本查询失败，刷新后重试: {e}")
-                await self._refresh_table()
-        if result is None:
-            return None
-        if result.num_rows == 0:
+        result = await self._query_with_retry(
+            lambda: self._table.query().where(
+                f"group_id = '{escaped_gid}' AND question_text = '{escaped_text}'"
+            ),
+            "按文本查询",
+        )
+        if result is None or result.num_rows == 0:
             return None
         record = result.to_pylist()[0]
         self._cache_put(cache_key, record)
-        return record
+        return dict(record)
 
     # ── 缓存 ────────────────────────────────────────────────
 
@@ -393,7 +412,7 @@ class WordStock:
         return f"{group_id}\x00{text}"
 
     def _cache_put(self, key: str, record: dict) -> None:
-        self._text_cache[key] = record
+        self._text_cache[key] = dict(record)
         self._text_cache.move_to_end(key)
         while len(self._text_cache) > self._text_cache_max:
             self._text_cache.popitem(last=False)
@@ -407,35 +426,39 @@ class WordStock:
         """增加问题的出现频率（问题复现时调用）。"""
         async with self._lock:
             await self._refresh_table()
+            if self._table is None:
+                return False
             rec = await self.get_by_id(record_id)
             if rec is None:
                 return False
             await self._table.update(
                 {"freq": rec["freq"] + 1, "updated_at": time.time()},
-                where=f"id = {record_id}",
+                where=f"id = {int(record_id)}",
             )
+            self._cache_invalidate(str(rec["group_id"]), str(rec["question_text"]))
             return True
 
     async def delete(self, record_id: int) -> bool:
         """按 ID 删除单条记录。"""
         async with self._lock:
             await self._refresh_table()
-            # 删除前查一下记录，以便清缓存
+            if self._table is None:
+                return False
             rec = await self.get_by_id(record_id)
-            if rec:
-                self._cache_invalidate(rec["group_id"], rec["question_text"])
-            await self._table.delete(f"id = {record_id}")
+            if rec is None:
+                return False
+            self._cache_invalidate(str(rec["group_id"]), str(rec["question_text"]))
+            await self._table.delete(f"id = {int(record_id)}")
             return True
 
     async def count(self, group_id: str | None = None) -> int:
         """统计记录数。"""
+        if self._table is None:
+            return 0
         if group_id:
-            result = (
-                await self._table.query().where(f"group_id = '{group_id}'").to_arrow()
-            )
-        else:
-            result = await self._table.query().to_arrow()
-        return result.num_rows
+            escaped_gid = self._escape_sql(group_id)
+            return await self._table.count_rows(filter=f"group_id = '{escaped_gid}'")
+        return await self._table.count_rows()
 
     async def search_cross_group(
         self,
@@ -445,29 +468,25 @@ class WordStock:
         top_k: int = 20,
     ) -> list[dict]:
         """跨群向量搜索：排除当前群，搜索其他所有群的词库。"""
-        if self._table is None:
+        if self._table is None or self._vec_dim is None:
+            return []
+        if len(query_vec) != self._vec_dim:
+            logger.error(
+                f"[WordStock] 跨群查询向量 {len(query_vec)} 维 != 词库 {self._vec_dim} 维！"
+            )
             return []
 
-        results = None
-        for attempt in range(2):
-            try:
-                # LanceDB 不支持 != 操作符直接做 nearest search，
-                # 所以我们：1) 全局 nearest search 取足够多候选 → 2) Python 侧过滤
-
-                results = await (
-                    self._table.query()
-                    .nearest_to(query_vec)
-                    .distance_type("cosine")
-                    .limit(top_k * 5)
-                    .to_arrow()
-                )
-                break
-            except Exception as e:
-                if attempt == 1:
-                    logger.error(f"[WordStock] 跨群搜索失败: {e}")
-                    return []
-                logger.warning(f"[WordStock] 跨群搜索失败，刷新后重试: {e}")
-                await self._refresh_table()
+        escaped_gid = self._escape_sql(exclude_group_id)
+        results = await self._query_with_retry(
+            lambda: (
+                self._table.query()
+                .nearest_to(query_vec)
+                .where(f"group_id != '{escaped_gid}'")
+                .distance_type("cosine")
+                .limit(top_k)
+            ),
+            "跨群搜索",
+        )
         if results is None:
             return []
 
@@ -534,6 +553,31 @@ class WordStock:
                 logger.warning(f"[WordStock] 清理版本失败: {e}")
                 return None
 
+    @staticmethod
+    def _compute_ivfpq_params(row_count: int, vec_dim: int) -> tuple[int, int]:
+        """计算合法的 IVF-PQ 分区数与子向量数（保证子向量数整除向量维度）。"""
+        nlist = max(1, min(int(np.sqrt(row_count)), 256))
+        max_sub = max(1, min(vec_dim // 8, 96))
+        n_sub = next((d for d in range(max_sub, 0, -1) if vec_dim % d == 0), 1)
+        return nlist, n_sub
+
+    async def _has_vec_index(self) -> bool:
+        """检查当前表是否已存在 vec 向量索引。"""
+        if self._table is None:
+            return False
+        try:
+            indices = await self._table.list_indices()
+            for idx in indices:
+                cols = getattr(idx, "columns", None)
+                if cols and "vec" in cols:
+                    return True
+                name = getattr(idx, "name", "")
+                if "vec" in str(name):
+                    return True
+        except Exception as e:
+            logger.debug(f"[WordStock] 查询索引列表失败: {e}")
+        return False
+
     async def ensure_index(self):
         """确保索引存在：数据量达标且未构建索引时自动构建 IVF-PQ。"""
         async with self._lock:
@@ -541,7 +585,10 @@ class WordStock:
             if self._table is None or self._vec_dim is None:
                 return
 
-            if getattr(self, "_index_built", False):
+            if self._index_built:
+                return
+            if await self._has_vec_index():
+                self._index_built = True
                 return
 
             row_count = await self.count()
@@ -549,8 +596,7 @@ class WordStock:
                 return
 
             try:
-                nlist = min(int(np.sqrt(row_count)), 256)
-                n_sub = min(self._vec_dim // 8, 96)
+                nlist, n_sub = self._compute_ivfpq_params(row_count, self._vec_dim)
                 logger.info(
                     f"[WordStock] 自动构建 IVF-PQ 索引: "
                     f"rows={row_count} nlist={nlist} n_sub_vectors={n_sub}"
@@ -584,8 +630,7 @@ class WordStock:
                 )
                 return
 
-            nlist = min(int(np.sqrt(row_count)), 256)
-            n_sub = min(self._vec_dim // 8, 96)
+            nlist, n_sub = self._compute_ivfpq_params(row_count, self._vec_dim)
             logger.debug(f"[WordStock] 重建 IVF-PQ 索引: nlist={nlist} n_sub={n_sub}")
             from lancedb.index import IvfPq
 
@@ -608,25 +653,37 @@ class WordStock:
             if self._table is None:
                 return 0
             cutoff = time.time() - days * 86400
-            result = await self._table.query().to_arrow()
-            to_delete: list[tuple[int, str, str]] = []  # (id, group_id, question_text)
-            for row in result.to_pylist():
-                if row["freq"] < min_freq and row["updated_at"] < cutoff:
-                    to_delete.append((row["id"], row["group_id"], row["question_text"]))
-            for rid, gid, qtext in to_delete:
-                self._cache_invalidate(gid, qtext)
-                await self._table.delete(f"id = {rid}")
-            logger.debug(f"[WordStock] 清理低频词条: {len(to_delete)} 条")
-            return len(to_delete)
+            predicate = f"freq < {int(min_freq)} AND updated_at < {float(cutoff)}"
+            result = await (
+                self._table.query()
+                .select(["id", "group_id", "question_text"])
+                .where(predicate)
+                .to_arrow()
+            )
+            rows = result.to_pylist()
+            if not rows:
+                return 0
+            for row in rows:
+                self._cache_invalidate(str(row["group_id"]), str(row["question_text"]))
+            await self._table.delete(predicate)
+            logger.debug(f"[WordStock] 清理低频词条: {len(rows)} 条")
+            return len(rows)
 
     async def export_data(self, group_id: str | None = None) -> list[dict]:
-        """导出词库数据（不含向量，导入时需重新生成 embedding）。"""
+        """导出词库数据（不含向量）。"""
+        if self._table is None:
+            return []
+        cols = ["group_id", "question_text", "question_raw", "answers", "freq"]
         if group_id:
-            result = (
-                await self._table.query().where(f"group_id = '{group_id}'").to_arrow()
+            escaped_gid = self._escape_sql(group_id)
+            result = await (
+                self._table.query()
+                .select(cols)
+                .where(f"group_id = '{escaped_gid}'")
+                .to_arrow()
             )
         else:
-            result = await self._table.query().to_arrow()
+            result = await self._table.query().select(cols).to_arrow()
         return [
             {
                 "group_id": r["group_id"],
@@ -637,60 +694,3 @@ class WordStock:
             }
             for r in result.to_pylist()
         ]
-
-    async def import_data(
-        self,
-        data: list[dict],
-        embedding_fn,  # async (text) -> list[float]
-    ) -> tuple[int, int]:
-        """导入词库数据，重新生成 embedding。返回 (新增数, 跳过数)。"""
-        added = 0
-        skipped = 0
-        for item in data:
-            gid = item["group_id"]
-            qtext = item["question_text"]
-            # 避免重复
-            exist = await self.get_by_text(gid, qtext)
-            if exist:
-                skipped += 1
-                # 合并答案
-                for a in item.get("answers", []):
-                    try:
-                        await self.add_answer(
-                            exist["id"],
-                            a.get("answertext", ""),
-                            a.get("answer_raw", a.get("answertext", "")),
-                        )
-                    except Exception:
-                        pass
-                continue
-            vec = await embedding_fn(qtext)
-            if vec is None:
-                skipped += 1
-                continue
-            # 逐个添加答案（避免 add_question 只带一个答案的限制）
-            first_answer = ""
-            first_raw = ""
-            if item.get("answers"):
-                first_answer = item["answers"][0].get("answertext", "")
-                first_raw = item["answers"][0].get("answer_raw", first_answer)
-
-            rid = await self.add_question(
-                group_id=gid,
-                question_text=qtext,
-                question_raw=item.get("question_raw", qtext),
-                vector=vec,
-                answer_text=first_answer,
-                answer_raw=first_raw,
-            )
-            # 追加剩余答案
-            for a in item.get("answers", [])[1:]:
-                await self.add_answer(
-                    rid,
-                    a.get("answertext", ""),
-                    a.get("answer_raw", a.get("answertext", "")),
-                )
-            added += 1
-
-        logger.debug(f"[WordStock] 导入完成: added={added} skipped={skipped}")
-        return added, skipped

@@ -24,6 +24,8 @@ from typing import Optional
 class Collector:
     """消息采集器：按群维护时间窗口，在内存中搭建 Q&A 链后写入词库。"""
 
+    _PRUNE_THRESHOLD = 256
+
     def __init__(self, interval: float):
         """
         Args:
@@ -59,6 +61,9 @@ class Collector:
         if timestamp is None:
             timestamp = time.time()
 
+        if len(self._windows) > self._PRUNE_THRESHOLD:
+            self.prune_expired(timestamp)
+
         window = self._windows.get(group_id)
         if window is None or (timestamp - window.last_time) > self.interval:
             # ── 开启新窗口 ──
@@ -85,6 +90,19 @@ class Collector:
         window.last_time = timestamp
 
         return qa
+
+    def prune_expired(self, now: float | None = None) -> int:
+        """清理已过期的群聊时间窗口，避免长期运行积累僵尸状态。"""
+        if now is None:
+            now = time.time()
+        expired = [
+            gid
+            for gid, win in self._windows.items()
+            if (now - win.last_time) > self.interval
+        ]
+        for gid in expired:
+            del self._windows[gid]
+        return len(expired)
 
     def set_interval(self, seconds: float):
         self.interval = seconds

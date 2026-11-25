@@ -5,7 +5,7 @@
   python migrate.py \
     --old-wordstock /path/to/old/WordStock \
     --new-lancedb /path/to/new/plugin_data/astrbot_plugin_chatlearning/lancedb \
-    --embedding-provider siliconflow \
+    [--local-model BAAI/bge-small-zh-v1.5] \
     [--hf-mirror https://hf-mirror.com]
 """
 
@@ -101,19 +101,22 @@ _answer_struct = pa.struct(
     ]
 )
 
-_new_schema = pa.schema(
-    [
-        pa.field("id", pa.int64()),
-        pa.field("group_id", pa.string()),
-        pa.field("question_text", pa.string()),
-        pa.field("question_raw", pa.string()),
-        pa.field("vec", pa.list_(pa.float32(), -1)),
-        pa.field("answers", pa.list_(_answer_struct)),
-        pa.field("freq", pa.int32()),
-        pa.field("created_at", pa.float64()),
-        pa.field("updated_at", pa.float64()),
-    ]
-)
+
+def build_schema(vec_dim: int) -> pa.Schema:
+    """按固定向量维度构建 LanceDB 表 Schema，以支持向量索引与检索。"""
+    return pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("group_id", pa.string()),
+            pa.field("question_text", pa.string()),
+            pa.field("question_raw", pa.string()),
+            pa.field("vec", pa.list_(pa.float32(), vec_dim)),
+            pa.field("answers", pa.list_(_answer_struct)),
+            pa.field("freq", pa.int32()),
+            pa.field("created_at", pa.float64()),
+            pa.field("updated_at", pa.float64()),
+        ]
+    )
 
 
 # ── 纯文本提取（从旧版消息链） ─────────────────────────────
@@ -142,7 +145,7 @@ async def migrate(args):
 
     # 初始化 embedding
     if args.local_model:
-        os.environ.setdefault("HF_ENDPOINT", args.hf_mirror or "https://hf-mirror.com")
+        os.environ["HF_ENDPOINT"] = args.hf_mirror or "https://hf-mirror.com"
         from sentence_transformers import SentenceTransformer
 
         print(f"加载本地模型: {args.local_model} ...")
@@ -167,7 +170,6 @@ async def migrate(args):
         if not args.embedding_provider:
             print("错误: 未指定 --local-model 时需要 --embedding-provider")
             sys.exit(1)
-        # 这里需要用户通过环境变量或其他方式提供 API，简化处理
         print("在线 embedding 需要在脚本中自行接入 API，当前仅支持 --local-model")
         print("示例: --local-model BAAI/bge-small-zh-v1.5")
         sys.exit(1)
@@ -183,16 +185,13 @@ async def migrate(args):
 
     db = None
     try:
-        # 打开/创建 LanceDB
         db = await lancedb.connect_async(str(new_dir))
         existing = (await db.list_tables()).tables
         table_name = "qa_pairs"
+        table = None
         if table_name in existing:
             table = await db.open_table(table_name)
             print(f"已打开现有 LanceDB 表: {new_dir}")
-        else:
-            table = await db.create_table(table_name, schema=_new_schema, mode="create")
-            print(f"已创建 LanceDB 表: {new_dir}")
 
         # 扫描旧数据库文件
         db_files = sorted(old_dir.glob("*.db"))
@@ -203,30 +202,40 @@ async def migrate(args):
         total_questions = 0
         total_answers = 0
         total_skipped = 0
+        batch_size = max(1, int(args.batch_size))
 
         for db_file in db_files:
             group_id = db_file.stem
             print(f"\n处理群 {group_id} ({db_file}) ...")
 
             batch = []
-            batch_size = 50
 
             for old_id, qtext, qraw, freq, answers in iter_old_wordstock(str(db_file)):
+                if not answers:
+                    total_skipped += 1
+                    continue
                 vec = await embed(qtext)
                 if not vec:
                     total_skipped += 1
                     continue
 
+                if table is None:
+                    table = await db.create_table(
+                        table_name, schema=build_schema(len(vec)), mode="create"
+                    )
+                    print(f"已创建 LanceDB 表: {new_dir} (dim={len(vec)})")
+
+                now = time.time()
                 row = {
-                    "id": int(time.time() * 1_000_000) + total_questions,
+                    "id": int(now * 1_000_000) + total_questions,
                     "group_id": group_id,
                     "question_text": qtext,
                     "question_raw": qraw,
                     "vec": vec,
                     "answers": answers,
                     "freq": freq,
-                    "created_at": time.time(),
-                    "updated_at": time.time(),
+                    "created_at": now,
+                    "updated_at": now,
                 }
                 batch.append(row)
                 total_questions += 1
@@ -237,14 +246,14 @@ async def migrate(args):
                     print(f"  已写入 {total_questions} 条...", end="\r")
                     batch.clear()
 
-            if batch:
+            if batch and table is not None:
                 await table.add(batch)
 
             print(f"  群 {group_id}: 迁移完成")
 
         print(f"\n✅ 迁移完成: {total_questions} 个问题, {total_answers} 个答案")
         if total_skipped:
-            print(f"⚠ 跳过 {total_skipped} 条（embedding 失败）")
+            print(f"⚠ 跳过 {total_skipped} 条（无答案或 embedding 失败）")
     finally:
         try:
             if db is not None:

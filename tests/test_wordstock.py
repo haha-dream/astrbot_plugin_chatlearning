@@ -521,3 +521,47 @@ class TestCleanupVersions:
         freed = await ws.cleanup_versions(retention_hours=1)
         assert isinstance(freed, int)
         assert freed >= 0
+
+
+class TestHardeningEdgeCases:
+    @pytest.mark.asyncio
+    async def test_empty_db_operations_do_not_crash(self, ws):
+        assert await ws.count() == 0
+        assert await ws.count("g1") == 0
+        assert await ws.export_data() == []
+        assert await ws.export_data("g1") == []
+        assert await ws.delete(12345) is False
+        assert await ws.touch(12345) is False
+        assert await ws.cleanup_low_freq() == 0
+
+    @pytest.mark.asyncio
+    async def test_empty_vector_rejected(self, ws):
+        assert await ws.add_question("g1", "q", "q", []) == 0
+        assert ws._vec_dim is None
+
+    @pytest.mark.asyncio
+    async def test_sql_quotes_in_group_id_escaped(self, ws):
+        vec = [0.1] * 16
+        gid = "g'1"
+        rid = await ws.add_question(gid, "it's ok", "it's ok", vec, "yes", "yes")
+        assert rid > 0
+        assert await ws.count(gid) == 1
+        assert await ws.get_by_text(gid, "it's ok") is not None
+        assert len(await ws.search_similar(gid, vec, threshold=0.0)) == 1
+        assert len(await ws.export_data(gid)) == 1
+
+    @pytest.mark.asyncio
+    async def test_touch_invalidates_text_cache(self, ws_with_data):
+        ws, rid, _ = ws_with_data
+        before = await ws.get_by_text("g1", "你好")
+        assert before["freq"] == 1
+        await ws.touch(rid)
+        after = await ws.get_by_text("g1", "你好")
+        assert after["freq"] == 2
+
+    def test_ivfpq_params_divide_dim(self):
+        for dim in (4, 384, 768, 1024, 1536):
+            nlist, n_sub = WordStock._compute_ivfpq_params(10000, dim)
+            assert nlist >= 1
+            assert n_sub >= 1
+            assert dim % n_sub == 0

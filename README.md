@@ -17,7 +17,7 @@
 
 ## 环境要求
 
-- AstrBot ≥ 4.0.0
+- AstrBot ≥ 4.24.2
 - Python ≥ 3.10
 - 若不启用本地模型，则**必须**在 WebUI 配置一个 Embedding Provider
 
@@ -28,7 +28,7 @@
 ```bash
 # 进入 AstrBot 插件目录
 cd AstrBot/data/plugins
-git clone https://github.com/user/astrbot_plugin_chatlearning
+git clone https://github.com/haha-dream/astrbot_plugin_chatlearning
 # 在 AstrBot WebUI → 插件管理 → 重载插件
 ```
 
@@ -43,9 +43,9 @@ git clone https://github.com/user/astrbot_plugin_chatlearning
 
 在 AstrBot WebUI → 插件管理 → ChatLearning → 管理，配置：
 
-| 必填项                  | 说明                                                     |
-| ----------------------- | -------------------------------------------------------- |
-| `embedding_provider_id` | 向量模型提供商 ID（与 WebUI 提供商管理中显示的名称一致） |
+| 必填项                  | 说明                                                               |
+| ----------------------- | ------------------------------------------------------------------ |
+| `embedding_provider_id` | 向量模型提供商 ID（与 WebUI 提供商管理中显示的名称一致，本地模式可空） |
 
 | 常用项                | 默认值 | 说明                                               |
 | --------------------- | ------ | -------------------------------------------------- |
@@ -71,8 +71,8 @@ git clone https://github.com/user/astrbot_plugin_chatlearning
 
 | 指令                         | 说明                               |
 | ---------------------------- | ---------------------------------- |
-| `/learn on`                  | 开启学习模式                       |
-| `/learn off`                 | 关闭学习模式                       |
+| `/learn on`                  | 开启学习模式（管理员）             |
+| `/learn off`                 | 关闭学习模式（管理员）             |
 | `/learn status`              | 查看学习状态                       |
 | `/learn group add [群号]`    | 添加学习群（管理员，不填则当前群） |
 | `/learn group remove <群号>` | 移除学习群（管理员）               |
@@ -82,8 +82,8 @@ git clone https://github.com/user/astrbot_plugin_chatlearning
 
 | 指令                         | 说明                 |
 | ---------------------------- | -------------------- |
-| `/reply on`                  | 开启回复模式         |
-| `/reply off`                 | 关闭回复模式         |
+| `/reply on`                  | 开启回复模式（管理员） |
+| `/reply off`                 | 关闭回复模式（管理员） |
 | `/reply status`              | 查看回复状态         |
 | `/reply group add [群号]`    | 添加回复群（管理员） |
 | `/reply group remove <群号>` | 移除回复群（管理员） |
@@ -91,14 +91,15 @@ git clone https://github.com/user/astrbot_plugin_chatlearning
 
 ### 词库管理
 
-| 指令                         | 说明                       |
-| ---------------------------- | -------------------------- |
-| `/wordstock stats`           | 查看本群词库统计           |
-| `/wordstock search <关键词>` | 搜索词库（精确+近似）      |
-| `/wordstock delete <id>`     | 删除词条（管理员）         |
-| `/wordstock export`          | 导出词库为 JSON（管理员）  |
-| `/wordstock cleanup`         | 清理低频词条（管理员）     |
-| `/wordstock rebuild_index`   | 重建向量索引（管理员）     |
+| 指令                         | 说明                          |
+| ---------------------------- | ----------------------------- |
+| `/wordstock stats`           | 查看本群词库统计              |
+| `/wordstock search <关键词>` | 搜索词库（精确+近似）         |
+| `/wordstock delete <id>`     | 删除词条（管理员）            |
+| `/wordstock export`          | 导出词库为 JSON（管理员）     |
+| `/wordstock cleanup`         | 清理低频词条（管理员）        |
+| `/wordstock rebuild_index`   | 重建向量索引（管理员）        |
+| `/wordstock cleanup_versions`| 清理 LanceDB 历史版本（管理员）|
 
 ### 过滤管理（管理员）
 
@@ -115,49 +116,50 @@ git clone https://github.com/user/astrbot_plugin_chatlearning
 
 ### 其他
 
-| 操作               | 说明             |
-| ------------------ | ---------------- |
-| 回复 bot 消息 `!d` | 快速删除对应词条 |
+| 操作               | 说明                                 |
+| ------------------ | ------------------------------------ |
+| 回复 bot 消息 `!d` | 快速删除所回复 bot 消息对应的词条    |
 
 ## 配置项完整列表
 
 在 WebUI 插件配置面板中可调整：
 
-| 配置项                     | 类型   | 默认  | 说明                                |
-| -------------------------- | ------ | ----- | ----------------------------------- |
-| `learning`                 | bool   | false | 学习模式开关                        |
-| `reply`                    | bool   | false | 回复模式开关                        |
-| `interval`                 | int    | 10    | 词库链间隔（秒）                    |
-| `learning_groups`          | list   | []    | 学习群白名单（空=全部）             |
-| `reply_groups`             | list   | []    | 回复群白名单（空=全部）             |
-| `reply_chance`             | int    | 50    | 回复概率（%）                       |
-| `reply_cd`                 | int    | 30    | 回复冷却（秒）                      |
-| `cos_match_threshold`      | float  | 0.75  | 相似度阈值                          |
-| `at_reply_only`            | bool   | false | 仅@回复                             |
-| `bot_names`                | list   | []    | Bot 昵称（`{me}` 占位符）           |
-| `sensitive_words`          | list   | []    | 敏感词                              |
-| `blocked_users`            | list   | []    | 黑名单                              |
-| `embedding_provider_id`    | string | ""    | **必填** 向量模型 ID                |
-| `llm_semantic_check`       | bool   | false | LLM 语义二次判断                    |
-| `llm_provider_id`          | string | ""    | 语义判断用 LLM ID（建议低成本模型） |
-| `llm_semantic_threshold`   | float  | 0.5   | LLM 灰色区间下限                    |
-| `cross_group_search`       | bool   | false | 跨群词库搜索                        |
-| `auto_cleanup_days`        | int    | 30    | 自动清理天数（0=禁用）              |
-| `max_answers_per_question` | int    | 20    | 每个问题最大答案数                  |
-| `persona_fusion_mode`      | string | off   | 人格融合：off/blend/full            |
-| `persona_fusion_provider`  | string | ""    | 融合用 LLM（下拉选择）              |
-| `persona_fusion_persona`   | string | ""    | 融合用人格（下拉选择）              |
-| `auto_schedule_enable`     | bool   | false | 定时调度开关                        |
-| `auto_schedule_learn_on`   | string | ""    | 自动开启学习（HH:MM）               |
-| `auto_schedule_learn_off`  | string | ""    | 自动关闭学习（HH:MM）               |
-| `auto_schedule_reply_on`   | string | ""    | 自动开启回复（HH:MM）               |
-| `auto_schedule_reply_off`  | string | ""    | 自动关闭回复（HH:MM）               |
+| 配置项                           | 类型   | 默认                    | 说明                                 |
+| -------------------------------- | ------ | ----------------------- | ------------------------------------ |
+| `learning`                       | bool   | false                   | 学习模式开关                         |
+| `reply`                          | bool   | false                   | 回复模式开关                         |
+| `interval`                       | int    | 10                      | 词库链间隔（秒）                     |
+| `learning_groups`                | list   | []                      | 学习群白名单（空=全部）              |
+| `reply_groups`                   | list   | []                      | 回复群白名单（空=全部）              |
+| `reply_chance`                   | int    | 50                      | 回复概率（%）                        |
+| `reply_cd`                       | int    | 30                      | 回复冷却（秒）                       |
+| `cos_match_threshold`            | float  | 0.75                    | 相似度阈值                           |
+| `bot_names`                      | list   | []                      | Bot 昵称（`{me}` 占位符）            |
+| `embedding_provider_id`          | string | ""                      | 向量模型 ID（在线模式必填）          |
+| `enable_local_embedding`         | bool   | false                   | 启用内置本地向量模型                 |
+| `local_embedding_model`          | string | BAAI/bge-small-zh-v1.5  | 本地向量模型名称                     |
+| `hf_endpoint`                    | string | https://huggingface.co  | HuggingFace 镜像地址                 |
+| `llm_semantic_check`             | bool   | false                   | LLM 语义二次判断                     |
+| `llm_provider_id`                | string | ""                      | 语义判断用 LLM ID（建议低成本模型）  |
+| `llm_semantic_threshold`         | float  | 0.5                     | LLM 灰色区间下限                     |
+| `cross_group_search`             | bool   | false                   | 跨群词库搜索                         |
+| `auto_cleanup_days`              | int    | 30                      | 自动清理天数（0=禁用）               |
+| `version_cleanup_interval_hours` | int    | 6                       | LanceDB 历史版本清理间隔（小时）     |
+| `version_retention_hours`        | int    | 2                       | LanceDB 历史版本保留时长（小时）     |
+| `max_answers_per_question`       | int    | 20                      | 每个问题最大答案数                   |
+| `auto_schedule_enable`           | bool   | false                   | 定时调度开关                         |
+| `auto_schedule_learn_on`         | string | ""                      | 自动开启学习（HH:MM）                |
+| `auto_schedule_learn_off`        | string | ""                      | 自动关闭学习（HH:MM）                |
+| `auto_schedule_reply_on`         | string | ""                      | 自动开启回复（HH:MM）                |
+| `auto_schedule_reply_off`        | string | ""                      | 自动关闭回复（HH:MM）                |
+| `sensitive_words`                | list   | []                      | 敏感词                               |
+| `blocked_users`                  | list   | []                      | 黑名单                               |
 
 ## 技术架构
 
 ```
 astrbot_plugin_chatlearning/
-├── main.py              # Star 插件入口 + 事件 + 25 指令
+├── main.py              # Star 插件入口 + 事件 + 指令
 ├── learning/
 │   └── collector.py     # 时间窗口 Q&A 链采集
 ├── storage/
@@ -165,14 +167,13 @@ astrbot_plugin_chatlearning/
 ├── reply/
 │   └── responder.py     # 向量匹配 + LLM 语义检查 + 跨群
 ├── filter/
-│   └── filter_engine.py # 敏感词/黑名单过滤
-├── config/
-│   └── config_mgr.py    # AstrBotConfig 访问层
+│   └── filter_engine.py # 敏感词/黑名单/消息特征过滤
+├── migrate.py           # 旧版 SQLite → LanceDB 迁移脚本
 ├── _conf_schema.json    # WebUI 配置
-└── requirements.txt     # lancedb / pyarrow / numpy
+└── requirements.txt     # lancedb / pyarrow / numpy / sentence-transformers / filelock
 ```
 
 - **存储**：LanceDB（Arrow 原生 `list<struct>` 嵌套类型，零 JSON 开销）
-- **匹配**：Embedding Provider → 向量余弦相似度，LLM 可选二次确认
+- **匹配**：Embedding Provider / 本地向量 → 向量余弦相似度，LLM 可选灰色区间二次确认
 - **索引**：IVF-PQ 自动构建（5000+ 条时每 100 次写入触发一次检查）
-- **优化**：Embedding LRU 缓存（3000 条，命中率 30-50%）+ 短消息噪音过滤
+- **优化**：Embedding LRU 缓存（3000 条）+ 短消息噪音过滤
