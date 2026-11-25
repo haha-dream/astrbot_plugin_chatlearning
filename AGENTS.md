@@ -66,7 +66,8 @@ FilterEngine.should_record()       ← sensitive words / blocked users
 - Use `ty` for static type checking when available.
 - Use `ruff format` and `ruff check` to format and lint.
 
-## Commit Convention
+## Commit & Release Convention
 
 - Commit messages **must** be written in English.
 - Follow conventional commits: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:` etc.
+- Whenever bumping the version in `metadata.yaml`, prepend a corresponding release section to `CHANGELOG.md`.
